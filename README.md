@@ -2,6 +2,10 @@
 
 OrbitDB relay + pinning/sync service used by our apps and tests.
 
+## AI Agents
+
+See `AGENTS.md` for an architecture and feature guide (entrypoints, data flow, env vars, and extension points).
+
 ## CLI
 
 Install:
@@ -21,11 +25,6 @@ Test mode (deterministic peer id via `TEST_PRIVATE_KEY` or `RELAY_PRIV_KEY`):
 ```bash
 orbitdb-relay-pinner --test
 ```
-
-## Why This Exists
-
-- The relay must be able to verify OrbitDB entries created by `did:key` identities.
-- This package registers `@orbitdb/identity-provider-did` with a `key-did-resolver` resolver before opening OrbitDB.
 
 ## Environment Variables (common)
 
