@@ -45,7 +45,7 @@ node dist/cli.js --test
 
 ## Docker Compose Example
 
-See `docs/docker-compose.example.yml` for a minimal deployment example with:
+See `docker-compose.example.yml` for a minimal deployment example with:
 
 - persistent datastore volume (PeerId/key survives restarts)
 - relay + metrics ports exposed (`9091/tcp`, `9092/tcp`, `9093/udp`, `9090/tcp`)

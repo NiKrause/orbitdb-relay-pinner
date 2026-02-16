@@ -1,5 +1,7 @@
 services:
   orbitdb-relay-pinner:
+    # This uses a plain Node runtime image and runs the published npm package via npx.
+    # If you publish a dedicated container image for this service, replace image+command.
     image: node:22-bookworm-slim
     container_name: orbitdb-relay-pinner
     restart: unless-stopped
