@@ -1,0 +1,28 @@
+services:
+  orbitdb-relay-pinner:
+    image: node:22-bookworm-slim
+    container_name: orbitdb-relay-pinner
+    restart: unless-stopped
+    command: >
+      sh -lc "npx -y orbitdb-relay-pinner@latest"
+    environment:
+      DATASTORE_PATH: /data
+      METRICS_PORT: "9090"
+      RELAY_TCP_PORT: "9091"
+      RELAY_WS_PORT: "9092"
+      RELAY_WEBRTC_PORT: "9093"
+      RELAY_DISABLE_WEBRTC: "0"
+      RELAY_DISABLE_IPV6: "0"
+      # AutoTLS stays enabled unless disableAutoTLS is set.
+      # Optional: announce public addrs to avoid private/VPN addrs in peers.
+      # VITE_APPEND_ANNOUNCE: "/ip4/<PUBLIC_IP>/tcp/9091,/ip4/<PUBLIC_IP>/tcp/9092/ws,/ip4/<PUBLIC_IP>/udp/9093/webrtc-direct"
+    ports:
+      - "9090:9090/tcp"
+      - "9091:9091/tcp"
+      - "9092:9092/tcp"
+      - "9093:9093/udp"
+    volumes:
+      - orbitdb-relay-data:/data
+
+volumes:
+  orbitdb-relay-data:
