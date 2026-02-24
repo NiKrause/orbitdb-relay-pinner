@@ -41,25 +41,33 @@ export class DatabaseService {
     this.orbitdb = await createOrbitDB({ ipfs, ...(directory ? { directory } : {}) })
   }
 
+  private extractImageCidsFromPayload(payload: any): string[] {
+    const result = new Set<string>()
+
+    const imageCid = payload?.imageCid ?? payload?.imageCID ?? payload?.image?.cid
+    const profilePictureCid =
+      payload?.profilePicture ??
+      payload?.profilePictureCid ??
+      payload?.profilePictureCID ??
+      ((payload?._id === 'profilePicture' || payload?._id === 'profilePictureCid' || payload?._id === 'profilePictureCID')
+        ? payload?.value
+        : undefined)
+    const mediaIds = Array.isArray(payload?.mediaIds) ? payload.mediaIds : []
+    const mediaId = payload?.mediaId
+
+    for (const candidate of [imageCid, profilePictureCid, mediaId, ...mediaIds]) {
+      if (typeof candidate === 'string' && candidate.length > 0) result.add(candidate)
+    }
+
+    return Array.from(result)
+  }
+
   private extractImageCids(records: any[]): string[] {
     const result = new Set<string>()
 
     for (const record of records) {
-      const payload = record?.value
-      const imageCid = payload?.imageCid ?? payload?.imageCID ?? payload?.image?.cid
-      const profilePictureCid =
-        payload?.profilePicture ??
-        payload?.profilePictureCid ??
-        payload?.profilePictureCID ??
-        ((payload?._id === 'profilePicture' || payload?._id === 'profilePictureCid' || payload?._id === 'profilePictureCID')
-          ? payload?.value
-          : undefined)
-      const mediaIds = Array.isArray(payload?.mediaIds) ? payload.mediaIds : []
-      const mediaId = payload?.mediaId
-
-      for (const candidate of [imageCid, profilePictureCid, mediaId, ...mediaIds]) {
-        if (typeof candidate === 'string' && candidate.length > 0) result.add(candidate)
-      }
+      const payload = record?.value ?? record
+      for (const candidate of this.extractImageCidsFromPayload(payload)) result.add(candidate)
     }
 
     return Array.from(result)
@@ -100,12 +108,16 @@ export class DatabaseService {
     }
   }
 
-  private async waitForUpdateEvent(db: any, timeoutMs = 5000): Promise<boolean> {
-    if (!db?.events?.on || !db?.events?.off) return false
+  private async waitForUpdateEvent(db: any, timeoutMs = 5000): Promise<{ didReceiveUpdate: boolean; updates: any[] }> {
+    if (!db?.events?.on || !db?.events?.off) return { didReceiveUpdate: false, updates: [] }
 
     let didUpdate = false
-    const onUpdate = () => {
+    const updates: any[] = []
+    let lastUpdateAt = 0
+    const onUpdate = (entry: any) => {
       didUpdate = true
+      lastUpdateAt = Date.now()
+      if (entry) updates.push(entry)
     }
 
     db.events.on('update', onUpdate)
@@ -114,7 +126,17 @@ export class DatabaseService {
       while (!didUpdate && !this.isShuttingDown && Date.now() - startedAt < timeoutMs) {
         await delay(100)
       }
-      return didUpdate
+
+      // After first update, collect closely-following updates in the same sync burst.
+      while (
+        didUpdate &&
+        !this.isShuttingDown &&
+        Date.now() - startedAt < timeoutMs &&
+        Date.now() - lastUpdateAt < 300
+      ) {
+        await delay(100)
+      }
+      return { didReceiveUpdate: didUpdate, updates }
     } finally {
       db.events.off('update', onUpdate)
     }
@@ -133,21 +155,18 @@ export class DatabaseService {
       syncLog('Opened database:', dbAddress)
 
       syncLog('Waiting for database update event:', dbAddress)
-      const didReceiveUpdate = await this.waitForUpdateEvent(db)
+      const { didReceiveUpdate, updates } = await this.waitForUpdateEvent(db)
       if (!didReceiveUpdate) {
         syncLog('No update event received within timeout:', dbAddress)
       } else {
-        syncLog('Received update event for database:', dbAddress)
+        syncLog('Received update event for database:', dbAddress, 'updates:', updates.length)
       }
 
-      const records = await db.all()
-      syncLog('Read records from database:', dbAddress, 'count:', records.length)
       if (didReceiveUpdate) {
-        this.enqueueImageCidsForPinning(this.extractImageCids(records))
-      }
-
-      if (records.length > 0) {
-        syncLog(`Sample record from ${db.name}:`, JSON.stringify(records[0], null, 2))
+        const updateRecords = updates.map((entry) => ({ value: entry?.payload?.value ?? entry?.value ?? entry }))
+        const imageCids = this.extractImageCids(updateRecords)
+        syncLog('Extracted media CIDs from updates:', dbAddress, 'count:', imageCids.length)
+        this.enqueueImageCidsForPinning(imageCids)
       }
 
       this.metrics.trackSync('documents', 'success')

@@ -6,6 +6,10 @@ OrbitDB relay + pinning/sync service used by our apps and tests.
 
 See `AGENTS.md` for an architecture and feature guide (entrypoints, data flow, env vars, and extension points).
 
+## Docs
+
+- Relay media pinning flow: `docs/relay-media-pinning.md`
+
 ## CLI
 
 Install:

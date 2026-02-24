@@ -9,7 +9,7 @@ This document is written for AI agents (and humans) making changes to this repo.
 - Boots a libp2p node configured to act as a circuit relay (relay v2 server) with multiple transports (TCP/WS/WebRTC-direct).
 - Creates a Helia instance on top of that libp2p node, backed by LevelDB blockstore/datastore.
 - Creates an OrbitDB instance that can verify entries produced by `did:key` identities (via `@orbitdb/identity-provider-did` + `key-did-resolver`).
-- Listens to pubsub events and attempts to "sync" OrbitDB databases by opening them and calling `db.all()`.
+- Listens to pubsub events, opens relevant OrbitDB databases, and processes update events to extract/pin media CIDs.
 - Exposes Prometheus metrics on an HTTP endpoint (`/metrics`).
 
 The primary consumer is the CLI `orbitdb-relay-pinner`, but the library export also exposes `startRelay()` for embedding.
@@ -49,7 +49,7 @@ The primary consumer is the CLI `orbitdb-relay-pinner`, but the library export a
 Shutdown:
 
 - CLI wires `SIGINT`/`SIGTERM` to `runtime.stop()` (best-effort cleanup).
-- `stop()` tries to remove event handlers, close stores, then `libp2p.stop()`.
+- `stop()` coordinates handler/queue cleanup, OrbitDB stop, metrics server stop, and IPFS/libp2p/storage shutdown.
 
 ## Core Features (Where Implemented)
 
@@ -98,6 +98,10 @@ This is the primary "why this exists" feature: enabling OrbitDB to verify entrie
 
 ### 4. Sync / "pinning" behavior
 
+Detailed reference:
+
+- `docs/relay-media-pinning.md` (full flow, extraction rules, queueing, shutdown, and test scenario)
+
 Event wiring in `src/events/handlers.ts`:
 
 - On pubsub `message` events:
@@ -107,9 +111,11 @@ Event wiring in `src/events/handlers.ts`:
 
 Sync implementation in `DatabaseService.syncAllOrbitDBRecords(dbAddress: string)`:
 
-- Opens the OrbitDB database by `dbAddress` and caches it in `openDatabases`.
-- Calls `db.all()` to read all records.
-- Emits lightweight stats by heuristically classifying database type by `db.name` containing `posts`, `comments`, `media`, `settings`.
+- Opens the OrbitDB database by `dbAddress`.
+- Waits up to ~5 seconds for an OrbitDB `update` event.
+- Extracts media CIDs from update entry payloads (eg `imageCid`, `profilePicture*`, `mediaId`, `mediaIds`) and enqueues pinning tasks.
+- Pinning uses Helia `pins.add()` through a non-blocking queue (concurrency 4) with dedupe sets for queued/already-pinned CIDs.
+- Closes the DB handle after sync.
 - Tracks metrics `orbitdb_sync_total` and `orbitdb_sync_duration_seconds`.
 
 Important caveat for agents:
@@ -125,6 +131,7 @@ Important caveat for agents:
   - `GET /metrics` for Prometheus scraping
 - Defaults to port `9090`, but handles `EADDRINUSE` by retrying on an ephemeral port if the requested port is not `0`.
 - Uses a singleton instance so creating `MetricsServer` multiple times does not double-register metrics.
+- Supports explicit `stop()` to close the HTTP server on relay shutdown.
 
 ## Configuration (Environment Variables)
 
@@ -204,7 +211,8 @@ Note: `src/utils/logger.ts` uses `@libp2p/logger` namespaces under `le-space:rel
 
 - Pubsub topic strings are treated as OrbitDB addresses (see caveat above).
 - `--test` key override expects a *hex string of protobuf bytes*, not a raw seed or base64.
-- Shutdown is best-effort and reaches into Helia’s internal store wrappers to try to close LevelDB handles; changes in Helia internals may break the `ipfs.blockstore?.child?.child?.child?.close?.()` path.
+- Sync waits for update events before enqueueing pin jobs; if no update is observed during timeout, no new media pin enqueue occurs in that sync run.
+- Shutdown now attempts coordinated queue/listener teardown, metrics server close, OrbitDB stop, and IPFS/libp2p stop; ordering still matters when extending lifecycle code.
 
 ## Files Worth Reading First
 
@@ -214,4 +222,3 @@ Note: `src/utils/logger.ts` uses `@libp2p/logger` namespaces under `le-space:rel
 - `src/services/database.ts`
 - `src/services/storage.ts`
 - `src/services/metrics.ts`
-
