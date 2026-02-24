@@ -6,6 +6,8 @@ import { loggingConfig } from '../config/logging.js'
 
 export function setupEventHandlers(libp2p: any, databaseService: any) {
   const cleanupFunctions: Array<() => void> = []
+  const certificateIntervals = new Set<ReturnType<typeof setInterval>>()
+  let isShuttingDown = false
 
   const peerConnectHandler = async (event: any) => {
     const peer = event.detail
@@ -28,8 +30,12 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
         .getMultiaddrs()
         .filter((ma: any) => WebSocketsSecure.exactMatch(ma) && ma.toString().includes('/sni/'))
         .map((ma: any) => ma.toString())
-      if (mas.length > 0) clearInterval(interval)
+      if (mas.length > 0) {
+        clearInterval(interval)
+        certificateIntervals.delete(interval)
+      }
     }, 1000)
+    certificateIntervals.add(interval)
   }
   libp2p.addEventListener('certificate:provision', certificateHandler)
   cleanupFunctions.push(() => libp2p.removeEventListener('certificate:provision', certificateHandler))
@@ -43,6 +49,7 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
   const syncQueue = new PQueue({ concurrency: 2 })
 
   const pubsubMessageHandler = (event: any) => {
+    if (isShuttingDown) return
     const msg = event.detail
     syncLog('Received pubsub message:', msg.topic)
     if (msg.topic && msg.topic.startsWith('/orbitdb/')) {
@@ -60,7 +67,8 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
   cleanupFunctions.push(() => libp2p.removeEventListener('connection:open', connectionOpenHandler))
 
   const pubsub = libp2p.services.pubsub
-  pubsub.addEventListener('subscription-change', (event: any) => {
+  const subscriptionChangeHandler = (event: any) => {
+    if (isShuttingDown) return
     if (event.detail?.subscriptions) {
       for (const subscription of event.detail.subscriptions) {
         if (subscription.topic?.startsWith('/orbitdb/')) {
@@ -68,7 +76,21 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
         }
       }
     }
-  })
+  }
+  pubsub.addEventListener('subscription-change', subscriptionChangeHandler)
+  cleanupFunctions.push(() => pubsub.removeEventListener('subscription-change', subscriptionChangeHandler))
 
-  return () => cleanupFunctions.forEach((cleanup) => cleanup())
+  return async () => {
+    isShuttingDown = true
+    cleanupFunctions.forEach((cleanup) => cleanup())
+
+    syncQueue.pause()
+    syncQueue.clear()
+    await syncQueue.onIdle()
+
+    for (const interval of certificateIntervals) {
+      clearInterval(interval)
+    }
+    certificateIntervals.clear()
+  }
 }

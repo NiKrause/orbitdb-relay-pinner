@@ -44,7 +44,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
   const cleanupEventHandlers = await setupEventHandlers(libp2p as any, databaseService as any)
 
   const metricsServer = new MetricsServer()
-  metricsServer.start()
+  await metricsServer.start()
 
   // Important: Playwright setup waits for this marker.
   // eslint-disable-next-line no-console
@@ -54,8 +54,19 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
 
   return {
     stop: async () => {
+      databaseService.beginShutdown()
       try {
-        cleanupEventHandlers?.()
+        await cleanupEventHandlers?.()
+      } catch {
+        // ignore
+      }
+      try {
+        await databaseService.stop()
+      } catch {
+        // ignore
+      }
+      try {
+        await metricsServer.stop()
       } catch {
         // ignore
       }
@@ -63,6 +74,11 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
         // best effort; helia/libp2p will close underlying stores as well
         // @ts-expect-error helia internal store wrappers
         await ipfs.blockstore?.child?.child?.child?.close?.()
+      } catch {
+        // ignore
+      }
+      try {
+        await ipfs.stop()
       } catch {
         // ignore
       }

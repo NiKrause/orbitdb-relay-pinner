@@ -18,6 +18,7 @@ export class DatabaseService {
   pinQueue: PQueue
   queuedImageCids: Set<string>
   pinnedImageCids: Set<string>
+  isShuttingDown: boolean
   orbitdb: any
   ipfs: any
 
@@ -30,6 +31,7 @@ export class DatabaseService {
     this.pinQueue = new PQueue({ concurrency: 4 })
     this.queuedImageCids = new Set()
     this.pinnedImageCids = new Set()
+    this.isShuttingDown = false
   }
 
   async initialize(ipfs: any, directory?: string) {
@@ -60,7 +62,7 @@ export class DatabaseService {
   }
 
   private enqueueImageCidsForPinning(imageCids: string[]) {
-    if (!this.ipfs?.pins || imageCids.length === 0) return
+    if (!this.ipfs?.pins || imageCids.length === 0 || this.isShuttingDown) return
 
     for (const imageCid of imageCids) {
       if (this.pinnedImageCids.has(imageCid) || this.queuedImageCids.has(imageCid)) continue
@@ -97,7 +99,7 @@ export class DatabaseService {
     db.events.on('update', onUpdate)
     try {
       const startedAt = Date.now()
-      while (!didUpdate && Date.now() - startedAt < timeoutMs) {
+      while (!didUpdate && !this.isShuttingDown && Date.now() - startedAt < timeoutMs) {
         await delay(100)
       }
       return didUpdate
@@ -107,6 +109,8 @@ export class DatabaseService {
   }
 
   async syncAllOrbitDBRecords(dbAddress: string) {
+    if (this.isShuttingDown) return
+
     syncLog('Starting sync for database:', dbAddress)
     const endTimer = this.metrics.startSyncTimer('all_databases')
     let db: any
@@ -149,6 +153,24 @@ export class DatabaseService {
       } catch {
         // ignore close failures
       }
+    }
+  }
+
+  beginShutdown() {
+    this.isShuttingDown = true
+  }
+
+  async stop() {
+    this.beginShutdown()
+
+    this.pinQueue.pause()
+    this.pinQueue.clear()
+    await this.pinQueue.onIdle()
+
+    try {
+      await this.orbitdb?.stop?.()
+    } catch {
+      // ignore stop failures
     }
   }
 }

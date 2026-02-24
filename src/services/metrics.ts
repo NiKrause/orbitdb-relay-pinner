@@ -5,6 +5,7 @@ import { logger } from '@libp2p/logger'
 const log = logger('le-space:relay')
 
 let metricsInstance: MetricsServer | null = null
+let defaultMetricsInitialized = false
 
 const syncCounter = new client.Counter({
   name: 'orbitdb_sync_total',
@@ -20,11 +21,14 @@ const syncDurationHistogram = new client.Histogram({
 })
 
 export class MetricsServer {
+  server: http.Server | null
+  startPromise: Promise<http.Server | null> | null
+
   constructor() {
+    this.server = null
+    this.startPromise = null
+
     if (!metricsInstance) {
-      if (!client.register.getSingleMetric('process_cpu_user_seconds_total')) {
-        client.collectDefaultMetrics()
-      }
       metricsInstance = this
     }
     return metricsInstance
@@ -38,6 +42,14 @@ export class MetricsServer {
     if (process.env.METRICS_DISABLED === 'true' || process.env.METRICS_DISABLED === '1') {
       log('Metrics server disabled (METRICS_DISABLED)')
       return null
+    }
+
+    if (this.server) return Promise.resolve(this.server)
+    if (this.startPromise) return this.startPromise
+
+    if (!defaultMetricsInitialized && !client.register.getSingleMetric('process_cpu_user_seconds_total')) {
+      client.collectDefaultMetrics()
+      defaultMetricsInitialized = true
     }
 
     const desiredPort = typeof port === 'string' ? Number(port) : port
@@ -69,7 +81,13 @@ export class MetricsServer {
         server.listen(p, () => resolve(server))
       })
 
-    return listen(Number.isFinite(desiredPort) ? desiredPort : 9090)
+    this.startPromise = listen(Number.isFinite(desiredPort) ? desiredPort : 9090).then((server) => {
+      this.server = server
+      this.startPromise = null
+      return server
+    })
+
+    return this.startPromise
   }
 
   trackSync(type: string, status = 'success') {
@@ -79,5 +97,17 @@ export class MetricsServer {
   startSyncTimer(type: string) {
     return syncDurationHistogram.startTimer({ type })
   }
-}
 
+  async stop() {
+    if (this.startPromise) {
+      await this.startPromise
+    }
+
+    if (!this.server) return
+
+    await new Promise<void>((resolve) => {
+      this.server?.close(() => resolve())
+    })
+    this.server = null
+  }
+}
