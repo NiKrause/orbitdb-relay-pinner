@@ -1,4 +1,4 @@
-name: relay-media-integration
+name: Relay Media Integration Test
 
 on:
   push:
@@ -10,6 +10,7 @@ on:
 
 jobs:
   relay-media-test:
+    name: Relay Media Replication (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       matrix:

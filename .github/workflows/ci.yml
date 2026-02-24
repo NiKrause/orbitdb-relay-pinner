@@ -1,4 +1,4 @@
-name: ci
+name: Build and Type Check
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
 
 jobs:
   build:
+    name: Build (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
