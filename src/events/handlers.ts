@@ -72,4 +72,3 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
 
   return () => cleanupFunctions.forEach((cleanup) => cleanup())
 }
-

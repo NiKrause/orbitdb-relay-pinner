@@ -1,6 +1,9 @@
 import { createOrbitDB, useIdentityProvider } from '@orbitdb/core'
 import OrbitDBIdentityProviderDID from '@orbitdb/identity-provider-did'
 import * as KeyDIDResolver from 'key-did-resolver'
+import { CID } from 'multiformats/cid'
+import { setTimeout as delay } from 'node:timers/promises'
+import PQueue from 'p-queue'
 
 import { MetricsServer } from './metrics.js'
 import { log, syncLog, logSyncStats } from '../utils/logger.js'
@@ -11,64 +14,125 @@ export class DatabaseService {
   identityDatabases: Map<string, any>
   databaseContexts: Map<string, any>
   updateTimers: Map<string, any>
-  openDatabases: Map<string, any>
   eventHandlers: Map<string, any>
+  pinQueue: PQueue
+  queuedImageCids: Set<string>
+  pinnedImageCids: Set<string>
   orbitdb: any
+  ipfs: any
 
   constructor() {
     this.metrics = new MetricsServer()
     this.identityDatabases = new Map()
     this.databaseContexts = new Map()
     this.updateTimers = new Map()
-    this.openDatabases = new Map()
     this.eventHandlers = new Map()
+    this.pinQueue = new PQueue({ concurrency: 4 })
+    this.queuedImageCids = new Set()
+    this.pinnedImageCids = new Set()
   }
 
-  async initialize(ipfs: any) {
+  async initialize(ipfs: any, directory?: string) {
     OrbitDBIdentityProviderDID.setDIDResolver(KeyDIDResolver.getResolver())
     useIdentityProvider(OrbitDBIdentityProviderDID as any)
-    this.orbitdb = await createOrbitDB({ ipfs })
+    this.ipfs = ipfs
+    this.orbitdb = await createOrbitDB({ ipfs, ...(directory ? { directory } : {}) })
+  }
+
+  private extractImageCids(records: any[]): string[] {
+    const result = new Set<string>()
+
+    for (const record of records) {
+      const payload = record?.value
+      const imageCid = payload?.imageCid ?? payload?.imageCID ?? payload?.image?.cid
+      if (typeof imageCid === 'string' && imageCid.length > 0) result.add(imageCid)
+    }
+
+    return Array.from(result)
+  }
+
+  private async pinImageCid(imageCid: string) {
+    const cid = CID.parse(imageCid)
+    for await (const _ of this.ipfs.pins.add(cid)) {
+      // consume the async generator to completion
+    }
+    syncLog('Pinned image CID:', imageCid)
+  }
+
+  private enqueueImageCidsForPinning(imageCids: string[]) {
+    if (!this.ipfs?.pins || imageCids.length === 0) return
+
+    for (const imageCid of imageCids) {
+      if (this.pinnedImageCids.has(imageCid) || this.queuedImageCids.has(imageCid)) continue
+
+      this.queuedImageCids.add(imageCid)
+      this.pinQueue
+        .add(async () => {
+          try {
+            await this.pinImageCid(imageCid)
+            this.pinnedImageCids.add(imageCid)
+          } catch (err: any) {
+            if (loggingConfig.logLevels.database) {
+              // eslint-disable-next-line no-console
+              console.error(`Failed to pin image CID ${imageCid}:`, err?.message || err)
+            }
+          } finally {
+            this.queuedImageCids.delete(imageCid)
+          }
+        })
+        .catch(() => {
+          // handled in task body
+        })
+    }
+  }
+
+  private async waitForUpdateEvent(db: any, timeoutMs = 5000): Promise<boolean> {
+    if (!db?.events?.on || !db?.events?.off) return false
+
+    let didUpdate = false
+    const onUpdate = () => {
+      didUpdate = true
+    }
+
+    db.events.on('update', onUpdate)
+    try {
+      const startedAt = Date.now()
+      while (!didUpdate && Date.now() - startedAt < timeoutMs) {
+        await delay(100)
+      }
+      return didUpdate
+    } finally {
+      db.events.off('update', onUpdate)
+    }
   }
 
   async syncAllOrbitDBRecords(dbAddress: string) {
     syncLog('Starting sync for database:', dbAddress)
     const endTimer = this.metrics.startSyncTimer('all_databases')
+    let db: any
 
     try {
-      let db: any
-      if (this.openDatabases.has(dbAddress)) {
-        db = this.openDatabases.get(dbAddress)
+      syncLog('Opening database:', dbAddress)
+      db = await this.orbitdb.open(dbAddress)
+      syncLog('Opened database:', dbAddress)
+
+      syncLog('Waiting for database update event:', dbAddress)
+      const didReceiveUpdate = await this.waitForUpdateEvent(db)
+      if (!didReceiveUpdate) {
+        syncLog('No update event received within timeout:', dbAddress)
       } else {
-        db = await this.orbitdb.open(dbAddress)
-        this.openDatabases.set(dbAddress, db)
+        syncLog('Received update event for database:', dbAddress)
       }
 
-      const previousCounts = this.identityDatabases.get(dbAddress) || { posts: 0, comments: 0, media: 0 }
       const records = await db.all()
+      syncLog('Read records from database:', dbAddress, 'count:', records.length)
+      if (didReceiveUpdate) {
+        this.enqueueImageCidsForPinning(this.extractImageCids(records))
+      }
 
       if (records.length > 0) {
         syncLog(`Sample record from ${db.name}:`, JSON.stringify(records[0], null, 2))
       }
-
-      let recordCounts = { posts: 0, comments: 0, media: 0 }
-      let dbType = 'unknown'
-
-      if (db.name.includes('posts') || db.name.includes('post')) {
-        recordCounts.posts = records.length
-        dbType = 'posts'
-      } else if (db.name.includes('comments') || db.name.includes('comment')) {
-        recordCounts.comments = records.length
-        dbType = 'comments'
-      } else if (db.name.includes('media')) {
-        recordCounts.media = records.length
-        dbType = 'media'
-      } else if (db.name.includes('settings') || db.name.includes('config')) {
-        dbType = 'settings'
-      }
-
-      const peerId = db?.identity?.id
-      logSyncStats(dbType, dbAddress, peerId, recordCounts, previousCounts)
-      this.identityDatabases.set(dbAddress, recordCounts)
 
       this.metrics.trackSync('documents', 'success')
       endTimer()
@@ -79,7 +143,12 @@ export class DatabaseService {
         // eslint-disable-next-line no-console
         console.error('Failed to sync database:', err)
       }
+    } finally {
+      try {
+        await db?.close?.()
+      } catch {
+        // ignore close failures
+      }
     }
   }
 }
-

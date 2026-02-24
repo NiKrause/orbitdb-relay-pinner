@@ -2,6 +2,7 @@ import { createLibp2p } from 'libp2p'
 import { createHelia } from 'helia'
 import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
 import { privateKeyFromProtobuf } from '@libp2p/crypto/keys'
+import { join } from 'node:path'
 
 import { createLibp2pConfig } from './config/libp2p.js'
 import { initializeStorage } from './services/storage.js'
@@ -38,7 +39,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
   const ipfs = await createHelia({ libp2p, datastore, blockstore })
 
   const databaseService = new DatabaseService()
-  await databaseService.initialize(ipfs as any)
+  await databaseService.initialize(ipfs as any, join(storageDir, 'orbitdb'))
 
   const cleanupEventHandlers = await setupEventHandlers(libp2p as any, databaseService as any)
 

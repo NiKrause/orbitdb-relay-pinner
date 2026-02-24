@@ -41,6 +41,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/add-shebang.mjs",
+    "test": "npm run build && mocha --timeout 180000 \"test/**/*.test.mjs\"",
+    "test:integration:relay-media": "npm run build && mocha --timeout 180000 \"test/relay-media-replication.test.mjs\"",
     "prepack": "npm run build"
   },
   "publishConfig": {
@@ -77,6 +79,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.1",
+    "mocha": "^11.7.2",
     "typescript": "^5.8.3"
   }
 }
