@@ -47,7 +47,19 @@ export class DatabaseService {
     for (const record of records) {
       const payload = record?.value
       const imageCid = payload?.imageCid ?? payload?.imageCID ?? payload?.image?.cid
-      if (typeof imageCid === 'string' && imageCid.length > 0) result.add(imageCid)
+      const profilePictureCid =
+        payload?.profilePicture ??
+        payload?.profilePictureCid ??
+        payload?.profilePictureCID ??
+        ((payload?._id === 'profilePicture' || payload?._id === 'profilePictureCid' || payload?._id === 'profilePictureCID')
+          ? payload?.value
+          : undefined)
+      const mediaIds = Array.isArray(payload?.mediaIds) ? payload.mediaIds : []
+      const mediaId = payload?.mediaId
+
+      for (const candidate of [imageCid, profilePictureCid, mediaId, ...mediaIds]) {
+        if (typeof candidate === 'string' && candidate.length > 0) result.add(candidate)
+      }
     }
 
     return Array.from(result)
