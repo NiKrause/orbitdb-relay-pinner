@@ -30,6 +30,18 @@ Test mode (deterministic peer id via `TEST_PRIVATE_KEY` or `RELAY_PRIV_KEY`):
 orbitdb-relay-pinner --test
 ```
 
+## Supported Access Controllers
+
+`orbitdb-relay-pinner` supports the following Access Controller types when opening OrbitDB databases:
+
+- `orbitdb` (built-in OrbitDB access controller)
+- `todo-delegation` (custom delegated todo controller registered by this package)
+
+Notes:
+
+- Existing databases are opened using the manifest `accessController.type`.
+- Creating a new database without explicitly passing an `AccessController` still defaults to `orbitdb`.
+
 ## Environment Variables (common)
 
 - `RELAY_TCP_PORT`, `RELAY_WS_PORT`, `RELAY_WEBRTC_PORT`

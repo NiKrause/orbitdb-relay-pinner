@@ -1,6 +1,6 @@
 {
   "name": "orbitdb-relay-pinner",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": false,
   "type": "module",
   "description": "OrbitDB relay + pinning/sync service for Helia/libp2p stacks.",

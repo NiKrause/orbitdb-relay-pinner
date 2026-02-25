@@ -1,4 +1,4 @@
-import { createOrbitDB, useIdentityProvider } from '@orbitdb/core'
+import { createOrbitDB, useAccessController, useIdentityProvider } from '@orbitdb/core'
 import OrbitDBIdentityProviderDID from '@orbitdb/identity-provider-did'
 import * as KeyDIDResolver from 'key-did-resolver'
 import { CID } from 'multiformats/cid'
@@ -8,6 +8,7 @@ import PQueue from 'p-queue'
 import { MetricsServer } from './metrics.js'
 import { log, syncLog, logSyncStats } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
+import DelegatedTodoAccessController from '../access/delegated-todo-access-controller.js'
 
 export class DatabaseService {
   metrics: MetricsServer
@@ -37,6 +38,7 @@ export class DatabaseService {
   async initialize(ipfs: any, directory?: string) {
     OrbitDBIdentityProviderDID.setDIDResolver(KeyDIDResolver.getResolver())
     useIdentityProvider(OrbitDBIdentityProviderDID as any)
+    useAccessController(DelegatedTodoAccessController as any)
     this.ipfs = ipfs
     this.orbitdb = await createOrbitDB({ ipfs, ...(directory ? { directory } : {}) })
   }
