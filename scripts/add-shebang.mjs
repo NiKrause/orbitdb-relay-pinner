@@ -10,6 +10,9 @@ if (!fs.existsSync(cliPath)) {
 }
 
 const data = fs.readFileSync(cliPath, 'utf8')
-if (data.startsWith(shebang)) process.exit(0)
+if (!data.startsWith(shebang)) {
+  fs.writeFileSync(cliPath, shebang + data, 'utf8')
+}
 
-fs.writeFileSync(cliPath, shebang + data, 'utf8')
+// Ensure npm package bin target is executable for systemd/env execution.
+fs.chmodSync(cliPath, 0o755)
