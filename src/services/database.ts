@@ -1,4 +1,4 @@
-import { createOrbitDB, useAccessController, useIdentityProvider } from '@orbitdb/core'
+import { createOrbitDB, Identities, useAccessController, useIdentityProvider } from '@orbitdb/core'
 import OrbitDBIdentityProviderDID from '@orbitdb/identity-provider-did'
 import * as KeyDIDResolver from 'key-did-resolver'
 import { CID } from 'multiformats/cid'
@@ -40,7 +40,25 @@ export class DatabaseService {
     useIdentityProvider(OrbitDBIdentityProviderDID as any)
     useAccessController(DelegatedTodoAccessController as any)
     this.ipfs = ipfs
-    this.orbitdb = await createOrbitDB({ ipfs, ...(directory ? { directory } : {}) })
+
+    // Add a fallback verifier for mixed writer modes (e.g. varsig + non-varsig DID signatures).
+    const baseIdentities = await Identities({ ipfs })
+    const relayIdentities = {
+      ...baseIdentities,
+      verifyIdentityFallback: async (identity: any) => {
+        try {
+          return await OrbitDBIdentityProviderDID.verifyIdentity(identity)
+        } catch {
+          return false
+        }
+      }
+    }
+
+    this.orbitdb = await createOrbitDB({
+      ipfs,
+      identities: relayIdentities,
+      ...(directory ? { directory } : {})
+    })
   }
 
   private extractImageCidsFromPayload(payload: any): string[] {
@@ -144,6 +162,57 @@ export class DatabaseService {
     }
   }
 
+
+  private installAccessControllerDebugHooks(db: any, dbAddress: string) {
+    try {
+      const access = db?.access
+      const canAppend = access?.canAppend
+      if (typeof canAppend !== 'function' || access.__debugCanAppendWrapped) return
+
+      const wrapped = async (entry: any) => {
+        const allowed = await canAppend.call(access, entry)
+        if (!allowed) {
+          const payload = entry?.payload || null
+          const value = payload?.value || null
+          const writerIdentityHash = entry?.identity || null
+          const writerKey = entry?.key || null
+          // eslint-disable-next-line no-console
+          console.warn('🚫 Relay AC rejected append', {
+            dbAddress,
+            dbName: db?.name || null,
+            accessType: access?.type || null,
+            writerIdentityHash,
+            writerKey,
+            payloadOp: payload?.op || null,
+            payloadKey: payload?.key || null,
+            valueType: value?.type || null,
+            valueAction: value?.action || null,
+            valueTaskKey: value?.taskKey || null,
+            valueDelegateDid: value?.delegateDid || null,
+            valuePerformedBy: value?.performedBy || null,
+            valueExpiresAt: value?.expiresAt || null
+          })
+        }
+        return allowed
+      }
+
+      access.canAppend = wrapped
+      access.__debugCanAppendWrapped = true
+      // eslint-disable-next-line no-console
+      console.log('🔍 Relay AC debug hook installed', {
+        dbAddress,
+        dbName: db?.name || null,
+        accessType: access?.type || null
+      })
+    } catch (error: any) {
+      // eslint-disable-next-line no-console
+      console.warn('⚠️ Failed to install relay AC debug hook', {
+        dbAddress,
+        error: error?.message || String(error)
+      })
+    }
+  }
+
   async syncAllOrbitDBRecords(dbAddress: string) {
     if (this.isShuttingDown) return
 
@@ -155,6 +224,7 @@ export class DatabaseService {
       syncLog('Opening database:', dbAddress)
       db = await this.orbitdb.open(dbAddress)
       syncLog('Opened database:', dbAddress)
+      this.installAccessControllerDebugHooks(db, dbAddress)
 
       syncLog('Waiting for database update event:', dbAddress)
       const { didReceiveUpdate, updates } = await this.waitForUpdateEvent(db)
