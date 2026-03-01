@@ -11,6 +11,7 @@ import { bootstrap } from '@libp2p/bootstrap'
 import { tcp } from '@libp2p/tcp'
 import { ping } from '@libp2p/ping'
 import { autoNAT } from '@libp2p/autonat'
+import { dcutr } from '@libp2p/dcutr'
 import { autoTLS } from '@ipshipyard/libp2p-auto-tls'
 import { keychain } from '@libp2p/keychain'
 import { prometheusMetrics } from '@libp2p/prometheus-metrics'
@@ -74,6 +75,7 @@ export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore)
   services: {
     ping: ping(),
     autonat: autoNAT(),
+    dcutr: dcutr(),
     aminoDHT: kadDHT({
       protocol: '/ipfs/kad/1.0.0',
       peerInfoMapper: removePrivateAddressesMapper,

@@ -43,7 +43,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
 
   const cleanupEventHandlers = await setupEventHandlers(libp2p as any, databaseService as any)
 
-  const metricsServer = new MetricsServer()
+  const metricsServer = new MetricsServer({ getLibp2p: () => libp2p as any })
   await metricsServer.start()
 
   // Important: Playwright setup waits for this marker.
