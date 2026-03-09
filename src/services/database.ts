@@ -9,6 +9,7 @@ import { MetricsServer } from './metrics.js'
 import { log, syncLog, logSyncStats } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
 import DelegatedTodoAccessController from '../access/delegated-todo-access-controller.js'
+import DeferredOrbitDBAccessController from '../access/deferred-orbitdb-access-controller.js'
 
 export class DatabaseService {
   metrics: MetricsServer
@@ -39,6 +40,7 @@ export class DatabaseService {
     OrbitDBIdentityProviderDID.setDIDResolver(KeyDIDResolver.getResolver())
     useIdentityProvider(OrbitDBIdentityProviderDID as any)
     useAccessController(DelegatedTodoAccessController as any)
+    useAccessController(DeferredOrbitDBAccessController as any)
     this.ipfs = ipfs
 
     // Add a fallback verifier for mixed writer modes (e.g. varsig + non-varsig DID signatures).
