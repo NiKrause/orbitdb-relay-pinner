@@ -1,5 +1,6 @@
-import { IPFSAccessController } from '@orbitdb/core'
 import { randomBytes } from 'node:crypto'
+import { verifyIdentityWithFallback } from './shared.js'
+import IPFSAccessController from './ipfs-access-controller.js'
 
 const type = 'orbitdb-deferred'
 const DEFAULT_ACL_SYNC_TIMEOUT = 5000
@@ -21,23 +22,6 @@ const toCustomAddress = (address?: string | null): string | undefined | null => 
   if (!address || typeof address !== 'string') return address
   if (!address.startsWith(ORBITDB_PREFIX)) return address
   return `${CUSTOM_PREFIX}${address.slice(ORBITDB_PREFIX.length)}`
-}
-
-const isUnsupportedVarsigHeaderError = (error: unknown): boolean => {
-  if (!(error instanceof Error)) return false
-  return /Unsupported varsig header/i.test(error.message)
-}
-
-const verifyIdentityWithFallback = async (identities: any, writerIdentity: any): Promise<boolean> => {
-  try {
-    return await identities.verifyIdentity(writerIdentity)
-  } catch (error) {
-    const fallback = identities?.verifyIdentityFallback
-    if (!isUnsupportedVarsigHeaderError(error) || typeof fallback !== 'function') {
-      throw error
-    }
-    return await fallback(writerIdentity)
-  }
 }
 
 const DeferredOrbitDBAccessController =
@@ -139,6 +123,7 @@ const DeferredOrbitDBAccessController =
       type,
       address: toCustomAddress(db.address?.toString?.() || db.address),
       write,
+      debugDb: db,
       canAppend,
       capabilities,
       get,

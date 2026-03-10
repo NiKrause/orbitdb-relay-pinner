@@ -35,6 +35,7 @@ orbitdb-relay-pinner --test
 `orbitdb-relay-pinner` supports the following Access Controller types when opening OrbitDB databases:
 
 - `orbitdb` (built-in OrbitDB access controller)
+- `orbitdb-deferred` (custom deferred OrbitDB ACL registered by this package)
 - `todo-delegation` (custom delegated todo controller registered by this package)
 
 Notes:

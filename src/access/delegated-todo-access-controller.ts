@@ -1,23 +1,7 @@
 import { OrbitDBAccessController } from '@orbitdb/core'
+import { verifyIdentityWithFallback } from './shared.js'
 
 const type = 'todo-delegation'
-
-const isUnsupportedVarsigHeaderError = (error: unknown): boolean => {
-  if (!(error instanceof Error)) return false
-  return /Unsupported varsig header/i.test(error.message)
-}
-
-export const verifyIdentityWithFallback = async (identities: any, writerIdentity: any): Promise<boolean> => {
-  try {
-    return await identities.verifyIdentity(writerIdentity)
-  } catch (error) {
-    const fallback = identities?.verifyIdentityFallback
-    if (!isUnsupportedVarsigHeaderError(error) || typeof fallback !== 'function') {
-      throw error
-    }
-    return await fallback(writerIdentity)
-  }
-}
 
 function parseDelegationActionKey(key: unknown): { taskKey: string; delegateDid: string } | null {
   if (typeof key !== 'string') return null

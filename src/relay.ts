@@ -9,6 +9,8 @@ import { initializeStorage } from './services/storage.js'
 import { DatabaseService } from './services/database.js'
 import { MetricsServer } from './services/metrics.js'
 import { setupEventHandlers } from './events/handlers.js'
+import { loggingConfig } from './config/logging.js'
+import { headsStreamLog, log } from './utils/logger.js'
 
 export type RelayOptions = {
   testMode?: boolean
@@ -17,6 +19,60 @@ export type RelayOptions = {
 
 export type RelayRuntime = {
   stop: () => Promise<void>
+}
+
+function attachOrbitdbHeadsStreamLogging(libp2p: any) {
+  if (!libp2p || libp2p.__orbitdbHeadsLoggingAttached) return
+
+  const originalDialProtocol = libp2p.dialProtocol?.bind(libp2p)
+  const originalHandle = libp2p.handle?.bind(libp2p)
+
+  if (typeof originalDialProtocol === 'function') {
+    libp2p.dialProtocol = async (peer: any, protocol: string, options: any) => {
+      const isHeadsProtocol = typeof protocol === 'string' && protocol.startsWith('/orbitdb/heads/')
+      const peerId = peer?.toString?.() || peer?.id?.toString?.() || 'unknown'
+
+      if (isHeadsProtocol) {
+        headsStreamLog('dial:start %s %s', peerId, protocol)
+      }
+
+      try {
+        const stream = await originalDialProtocol(peer, protocol, options)
+        if (isHeadsProtocol) {
+          headsStreamLog('dial:connected %s %s', peerId, protocol)
+        }
+        return stream
+      } catch (error: any) {
+        if (isHeadsProtocol) {
+          headsStreamLog('dial:error %s %s %s', peerId, protocol, error?.message || String(error))
+        }
+        throw error
+      }
+    }
+  }
+
+  if (typeof originalHandle === 'function') {
+    libp2p.handle = async (protocol: string, handler: any, options: any) => {
+      const isHeadsProtocol = typeof protocol === 'string' && protocol.startsWith('/orbitdb/heads/')
+      if (!isHeadsProtocol) {
+        return await originalHandle(protocol, handler, options)
+      }
+
+      headsStreamLog('handle:registered %s', protocol)
+      const wrappedHandler = async (context: any) => {
+        headsStreamLog(
+          'handle:received %s %s',
+          protocol,
+          context?.connection?.remotePeer?.toString?.() || 'unknown'
+        )
+        return await handler(context)
+      }
+
+      return await originalHandle(protocol, wrappedHandler, options)
+    }
+  }
+
+  libp2p.__orbitdbHeadsLoggingAttached = true
 }
 
 export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime> {
@@ -36,6 +92,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
   }
 
   const libp2p = await createLibp2p(createLibp2pConfig(privateKey, datastore))
+  attachOrbitdbHeadsStreamLogging(libp2p as any)
   const ipfs = await createHelia({ libp2p, datastore, blockstore })
 
   const databaseService = new DatabaseService()
@@ -46,11 +103,10 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
   const metricsServer = new MetricsServer({ getLibp2p: () => libp2p as any })
   await metricsServer.start()
 
-  // Important: Playwright setup waits for this marker.
-  // eslint-disable-next-line no-console
-  console.log(`Relay PeerId: ${libp2p.peerId.toString()}`)
-  // eslint-disable-next-line no-console
-  console.log('p2p addr: ', libp2p.getMultiaddrs().map((ma) => ma.toString()))
+  if (loggingConfig.enableGeneralLogs) {
+    log('Relay PeerId: %s', libp2p.peerId.toString())
+    log('p2p addr: %o', libp2p.getMultiaddrs().map((ma) => ma.toString()))
+  }
 
   return {
     stop: async () => {

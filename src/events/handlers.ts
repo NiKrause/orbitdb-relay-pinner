@@ -14,6 +14,20 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
     try {
       if (loggingConfig.logLevels.peer) log('peer:connect', peer)
       await identify(peer)
+      try {
+        const peerId = peer?.toString?.() || peer?.id?.toString?.() || 'unknown'
+        let peerRecord = null
+        try {
+          peerRecord = await libp2p.peerStore.get(peer?.id || peer)
+        } catch (error: any) {
+          if (error?.code !== 'ERR_NOT_FOUND') throw error
+        }
+        const protocols = peerRecord?.protocols ?? []
+        syncLog('Peer protocols after identify:', {
+          peerId,
+          protocols: Array.isArray(protocols) ? protocols : Array.from(protocols || []),
+        })
+      } catch {}
     } catch (err: any) {
       if (err?.code !== 'ERR_UNSUPPORTED_PROTOCOL' && loggingConfig.logLevels.peer) {
         // eslint-disable-next-line no-console
@@ -47,12 +61,28 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
   cleanupFunctions.push(() => libp2p.removeEventListener('peer:disconnect', peerDisconnectHandler))
 
   const syncQueue = new PQueue({ concurrency: 2 })
+  const subscribedOrbitdbTopics = new Set<string>()
+  const pubsub = libp2p.services.pubsub
+
+  const ensureOrbitdbTopicSubscribed = async (topic: string) => {
+    if (!topic?.startsWith('/orbitdb/')) return
+    if (subscribedOrbitdbTopics.has(topic)) return
+
+    try {
+      await pubsub.subscribe(topic)
+      subscribedOrbitdbTopics.add(topic)
+      syncLog('Explicitly subscribed relay pubsub to OrbitDB topic:', topic)
+    } catch (error: any) {
+      syncLog('Failed to subscribe relay pubsub to OrbitDB topic:', topic, error?.message || String(error))
+    }
+  }
 
   const pubsubMessageHandler = (event: any) => {
     if (isShuttingDown) return
     const msg = event.detail
     syncLog('Received pubsub message:', msg.topic)
     if (msg.topic && msg.topic.startsWith('/orbitdb/')) {
+      syncQueue.add(() => ensureOrbitdbTopicSubscribed(msg.topic))
       syncQueue.add(() => databaseService.syncAllOrbitDBRecords(msg.topic))
     }
   }
@@ -66,12 +96,12 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
   libp2p.addEventListener('connection:open', connectionOpenHandler)
   cleanupFunctions.push(() => libp2p.removeEventListener('connection:open', connectionOpenHandler))
 
-  const pubsub = libp2p.services.pubsub
   const subscriptionChangeHandler = (event: any) => {
     if (isShuttingDown) return
     if (event.detail?.subscriptions) {
       for (const subscription of event.detail.subscriptions) {
         if (subscription.topic?.startsWith('/orbitdb/')) {
+          syncQueue.add(() => ensureOrbitdbTopicSubscribed(subscription.topic))
           syncQueue.add(() => databaseService.syncAllOrbitDBRecords(subscription.topic))
         }
       }

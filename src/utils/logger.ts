@@ -2,14 +2,17 @@ import { logger, enable } from '@libp2p/logger'
 import { loggingConfig } from '../config/logging.js'
 
 const baseLogger = logger('le-space:relay')
-
 if (loggingConfig.enableGeneralLogs) enable('le-space:relay:*')
 
 const syncLogger = logger('le-space:relay:sync')
 if (loggingConfig.enableSyncLogs) enable('le-space:relay:sync')
 
+const headsStreamLogger = logger('le-space:relay:libp2p:heads')
+if (loggingConfig.enableHeadsStreamLogs) enable('le-space:relay:libp2p:heads')
+
 export const log: (...args: any[]) => void = loggingConfig.enableGeneralLogs ? (baseLogger as any) : () => {}
 export const syncLog: (...args: any[]) => void = loggingConfig.enableSyncLogs ? (syncLogger as any) : () => {}
+export const headsStreamLog: (...args: any[]) => void = loggingConfig.enableHeadsStreamLogs ? (headsStreamLogger as any) : () => {}
 
 export const logSyncStats = (
   dbType: string,
@@ -48,4 +51,3 @@ export const logSyncStats = (
   // eslint-disable-next-line no-console
   console.log('  ─────────────────────────────────────────────────────────')
 }
-
