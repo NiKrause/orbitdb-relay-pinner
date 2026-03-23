@@ -43,6 +43,15 @@ Notes:
 - Existing databases are opened using the manifest `accessController.type`.
 - Creating a new database without explicitly passing an `AccessController` still defaults to `orbitdb`.
 
+## Identity providers (OrbitDB)
+
+The relay registers OrbitDB identity providers so it can verify oplog entries from peers that use passkey-backed identities (same stack as `@le-space/orbitdb-identity-provider-webauthn-did`):
+
+- `publickey` — default from `@orbitdb/core`
+- `did` — `@orbitdb/identity-provider-did`
+- `webauthn` — worker WebAuthn + keystore (e.g. Ed25519 `did:key` via keystore)
+- `webauthn-varsig` — hardware varsig identities (verification uses embedded public key only; no passkey on the server)
+
 ## Environment Variables (common)
 
 - `RELAY_TCP_PORT`, `RELAY_WS_PORT`, `RELAY_WEBRTC_PORT`

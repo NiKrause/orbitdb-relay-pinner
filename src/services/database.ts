@@ -1,4 +1,8 @@
 import { createOrbitDB, Identities, parseAddress, useAccessController, useIdentityProvider } from '@orbitdb/core'
+import {
+  OrbitDBWebAuthnIdentityProviderFunction,
+  verifyVarsigIdentity
+} from '@le-space/orbitdb-identity-provider-webauthn-did'
 import OrbitDBIdentityProviderDID from '@orbitdb/identity-provider-did'
 import * as KeyDIDResolver from 'key-did-resolver'
 import { CID } from 'multiformats/cid'
@@ -54,6 +58,12 @@ export class DatabaseService {
   async initialize(ipfs: any, directory?: string) {
     OrbitDBIdentityProviderDID.setDIDResolver(KeyDIDResolver.getResolver())
     useIdentityProvider(OrbitDBIdentityProviderDID as any)
+    // Worker WebAuthn + keystore (type: webauthn); hardware varsig (type: webauthn-varsig)
+    useIdentityProvider(OrbitDBWebAuthnIdentityProviderFunction as any)
+    useIdentityProvider({
+      type: 'webauthn-varsig',
+      verifyIdentity: verifyVarsigIdentity
+    } as any)
     useAccessController(IPFSAccessController as any)
     useAccessController(DelegatedTodoAccessController as any)
     useAccessController(DeferredOrbitDBAccessController as any)
@@ -63,15 +73,37 @@ export class DatabaseService {
     const baseIdentities = await Identities({ ipfs })
     const relayIdentities = {
       ...baseIdentities,
+      // Only run DID JWS verification for `did` identities. The DID provider's verifyIdentity
+      // builds a JWS from signatures.publicKey; calling it for webauthn / varsig shapes hits
+      // dids ("No kid found in jws") or unhandled rejections because verifyJWS is not awaited upstream.
       verifyIdentityFallback: async (identity: any) => {
-        try {
-          return await OrbitDBIdentityProviderDID.verifyIdentity(identity)
-        } catch {
+        if (!identity) return false
+        const t = identity?.type
+        if (t === 'did') {
           try {
-            return await verifyWorkerEd25519Identity(identity)
+            return await OrbitDBIdentityProviderDID.verifyIdentity(identity)
           } catch {
             return false
           }
+        }
+        if (t === 'webauthn' && typeof (OrbitDBWebAuthnIdentityProviderFunction as any).verifyIdentity === 'function') {
+          try {
+            return await (OrbitDBWebAuthnIdentityProviderFunction as any).verifyIdentity(identity)
+          } catch {
+            return false
+          }
+        }
+        if (t === 'webauthn-varsig') {
+          try {
+            return await verifyVarsigIdentity(identity)
+          } catch {
+            return false
+          }
+        }
+        try {
+          return await verifyWorkerEd25519Identity(identity)
+        } catch {
+          return false
         }
       }
     }

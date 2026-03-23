@@ -1,0 +1,6 @@
+allowBuilds:
+  '@ipshipyard/node-datachannel': true
+  '@le-space/orbitdb-identity-provider-webauthn-did': true
+  cbor-extract: true
+  classic-level: true
+  esbuild: true

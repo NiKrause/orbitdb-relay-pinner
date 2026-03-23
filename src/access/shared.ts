@@ -1,8 +1,3 @@
-const isUnsupportedVarsigHeaderError = (error: unknown): boolean => {
-  if (!(error instanceof Error)) return false
-  return /Unsupported varsig header/i.test(error.message)
-}
-
 export const verifyIdentityWithFallback = async (identities: any, writerIdentity: any): Promise<boolean> => {
   const fallback = identities?.verifyIdentityFallback
 
@@ -14,9 +9,10 @@ export const verifyIdentityWithFallback = async (identities: any, writerIdentity
     }
     return false
   } catch (error) {
-    if (!isUnsupportedVarsigHeaderError(error) || typeof fallback !== 'function') {
-      throw error
+    // Primary verify can throw (e.g. provider edge cases). Prefer fallback for relay robustness.
+    if (typeof fallback === 'function') {
+      return await fallback(writerIdentity)
     }
-    return await fallback(writerIdentity)
+    throw error
   }
 }
