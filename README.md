@@ -1,5 +1,8 @@
 # orbitdb-relay-pinner
 
+[![Build](https://github.com/NiKrause/orbitdb-relay-pinner/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NiKrause/orbitdb-relay-pinner/actions/workflows/ci.yml?query=branch%3Amain)
+[![Relay media integration](https://github.com/NiKrause/orbitdb-relay-pinner/actions/workflows/relay-media-integration.yml/badge.svg?branch=main)](https://github.com/NiKrause/orbitdb-relay-pinner/actions/workflows/relay-media-integration.yml?query=branch%3Amain)
+
 OrbitDB relay + pinning/sync service used by our apps and tests.
 
 ## AI Agents
