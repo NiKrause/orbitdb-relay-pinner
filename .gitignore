@@ -1,5 +1,28 @@
+# Dependencies & build
 node_modules/
 dist/
-.env*
+
+# Environment (keep example file committable)
+.env
+.env.*
+!.env.example
+
+# Logs
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS / editor
 .DS_Store
+Thumbs.db
+.idea/
+
+# TypeScript / tooling
+*.tsbuildinfo
+coverage/
+.nyc_output/
+
+# Local relay / Helia / OrbitDB / LevelDB data (DATASTORE_PATH, default ./orbitdb/pinning-service, identities, ipfs blocks, etc.)
+orbitdb/

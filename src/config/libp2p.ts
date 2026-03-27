@@ -18,91 +18,126 @@ import { prometheusMetrics } from '@libp2p/prometheus-metrics'
 import type { PrivateKey } from '@libp2p/interface'
 import type { Datastore } from 'interface-datastore'
 
-const appendAnnounce = (
-  process.env.NODE_ENV === 'development' ? process.env.VITE_APPEND_ANNOUNCE_DEV : process.env.VITE_APPEND_ANNOUNCE
-) || ''
+import {
+  getCircuitRelayDefaultDataLimitBytes,
+  getCircuitRelayDefaultDurationLimitMs,
+  getCircuitRelayHopTimeoutMs,
+  getCircuitRelayMaxReservations,
+  getCircuitRelayReservationTtlMs,
+} from './circuit-relay-env.js'
 
-const appendAnnounceArray = appendAnnounce
-  .split(',')
-  .map((addr) => addr.trim())
-  .filter(Boolean)
+/** Read env at config build time so tests (and multiple `startRelay` calls) can change ports between runs. */
+function readRelayListenEnv() {
+  const appendAnnounce =
+    (process.env.NODE_ENV === 'development' ? process.env.VITE_APPEND_ANNOUNCE_DEV : process.env.VITE_APPEND_ANNOUNCE) ||
+    ''
 
-const RELAY_TCP_PORT = Number(process.env.RELAY_TCP_PORT || 9091)
-const RELAY_WS_PORT = Number(process.env.RELAY_WS_PORT || 9092)
-const RELAY_WEBRTC_PORT = Number(process.env.RELAY_WEBRTC_PORT || 9093)
-const RELAY_LISTEN_IPV4 = process.env.RELAY_LISTEN_IPV4 || '0.0.0.0'
-const RELAY_LISTEN_IPV6 = process.env.RELAY_LISTEN_IPV6 || '::'
-const RELAY_DISABLE_IPV6 = process.env.RELAY_DISABLE_IPV6 === 'true' || process.env.RELAY_DISABLE_IPV6 === '1'
-const RELAY_DISABLE_WEBRTC =
-  process.env.RELAY_DISABLE_WEBRTC === 'true' || process.env.RELAY_DISABLE_WEBRTC === '1'
+  const appendAnnounceArray = appendAnnounce
+    .split(',')
+    .map((addr) => addr.trim())
+    .filter(Boolean)
 
-const PUBSUB_TOPICS = (process.env.PUBSUB_TOPICS || process.env.VITE_PUBSUB_TOPICS || 'todo._peer-discovery._p2p._pubsub')
-  .split(',')
-  .map((t) => t.trim())
-  .filter(Boolean)
+  const tcpPort = Number(process.env.RELAY_TCP_PORT || 9091)
+  const wsPort = Number(process.env.RELAY_WS_PORT || 9092)
+  const webrtcPort = Number(process.env.RELAY_WEBRTC_PORT || 9093)
+  const listenIpv4 = process.env.RELAY_LISTEN_IPV4 || '0.0.0.0'
+  const listenIpv6 = process.env.RELAY_LISTEN_IPV6 || '::'
+  const disableIpv6 = process.env.RELAY_DISABLE_IPV6 === 'true' || process.env.RELAY_DISABLE_IPV6 === '1'
+  const disableWebRtc =
+    process.env.RELAY_DISABLE_WEBRTC === 'true' || process.env.RELAY_DISABLE_WEBRTC === '1'
 
-export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore) =>
-  ({
-  privateKey,
-  datastore,
-  metrics: prometheusMetrics(),
-  addresses: {
-    listen: [
-      `/ip4/${RELAY_LISTEN_IPV4}/tcp/${RELAY_TCP_PORT}`,
-      `/ip4/${RELAY_LISTEN_IPV4}/tcp/${RELAY_WS_PORT}/ws`,
-      ...(!RELAY_DISABLE_WEBRTC ? [`/ip4/${RELAY_LISTEN_IPV4}/udp/${RELAY_WEBRTC_PORT}/webrtc-direct`] : []),
-      ...(!RELAY_DISABLE_IPV6
-        ? [
-            `/ip6/${RELAY_LISTEN_IPV6}/tcp/${RELAY_TCP_PORT}`,
-            `/ip6/${RELAY_LISTEN_IPV6}/tcp/${RELAY_WS_PORT}/ws`,
-            ...(!RELAY_DISABLE_WEBRTC ? [`/ip6/${RELAY_LISTEN_IPV6}/udp/${RELAY_WEBRTC_PORT}/webrtc-direct`] : []),
-          ]
-        : []),
+  const pubsubTopics = (
+    process.env.PUBSUB_TOPICS ||
+    process.env.VITE_PUBSUB_TOPICS ||
+    'todo._peer-discovery._p2p._pubsub'
+  )
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+
+  return {
+    appendAnnounceArray,
+    tcpPort,
+    wsPort,
+    webrtcPort,
+    listenIpv4,
+    listenIpv6,
+    disableIpv6,
+    disableWebRtc,
+    pubsubTopics,
+  }
+}
+
+export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore) => {
+  const e = readRelayListenEnv()
+
+  return {
+    privateKey,
+    datastore,
+    metrics: prometheusMetrics(),
+    addresses: {
+      listen: [
+        `/ip4/${e.listenIpv4}/tcp/${e.tcpPort}`,
+        `/ip4/${e.listenIpv4}/tcp/${e.wsPort}/ws`,
+        ...(!e.disableWebRtc ? [`/ip4/${e.listenIpv4}/udp/${e.webrtcPort}/webrtc-direct`] : []),
+        ...(!e.disableIpv6
+          ? [
+              `/ip6/${e.listenIpv6}/tcp/${e.tcpPort}`,
+              `/ip6/${e.listenIpv6}/tcp/${e.wsPort}/ws`,
+              ...(!e.disableWebRtc ? [`/ip6/${e.listenIpv6}/udp/${e.webrtcPort}/webrtc-direct`] : []),
+            ]
+          : []),
+      ],
+      ...(e.appendAnnounceArray.length > 0 && { appendAnnounce: e.appendAnnounceArray }),
+    },
+    transports: [
+      circuitRelayTransport(),
+      tcp(),
+      ...(!e.disableWebRtc ? [webRTC(), webRTCDirect()] : []),
+      webSockets(),
     ],
-    ...(appendAnnounceArray.length > 0 && { appendAnnounce: appendAnnounceArray }),
-  },
-  transports: [circuitRelayTransport(), tcp(), ...(!RELAY_DISABLE_WEBRTC ? [webRTC(), webRTCDirect()] : []), webSockets()],
-  peerDiscovery: [
-    pubsubPeerDiscovery({
-      interval: 5000,
-      topics: PUBSUB_TOPICS,
-      listenOnly: false,
-      emitSelf: true,
-    } as any),
-  ],
-  connectionEncrypters: [noise()],
-  streamMuxers: [yamux()],
-  services: {
-    ping: ping(),
-    autonat: autoNAT(),
-    dcutr: dcutr(),
-    aminoDHT: kadDHT({
-      protocol: '/ipfs/kad/1.0.0',
-      peerInfoMapper: removePrivateAddressesMapper,
-    }),
-    relay: circuitRelayServer({
-      hopTimeout: 30000,
-      reservations: {
-        maxReservations: 1000,
-        reservationTtl: 2 * 60 * 60 * 1000,
-        defaultDataLimit: BigInt(1024 * 1024 * 1024),
-        defaultDurationLimit: 2 * 60 * 1000,
-      },
-    }),
-    identify: identify(),
-    identifyPush: identifyPush(),
-    pubsub: gossipsub({ allowPublishToZeroTopicPeers: true }),
-    ...(!process.env.disableAutoTLS && {
-      autoTLS: autoTLS({
-        autoConfirmAddress: true,
-        ...(process.env.STAGING === 'true' && {
-          acmeDirectory: 'https://acme-staging-v02.api.letsencrypt.org/directory',
+    peerDiscovery: [
+      pubsubPeerDiscovery({
+        interval: 5000,
+        topics: e.pubsubTopics,
+        listenOnly: false,
+        emitSelf: true,
+      } as any),
+    ],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: {
+      ping: ping(),
+      autonat: autoNAT(),
+      dcutr: dcutr(),
+      aminoDHT: kadDHT({
+        protocol: '/ipfs/kad/1.0.0',
+        peerInfoMapper: removePrivateAddressesMapper,
+      }),
+      relay: circuitRelayServer({
+        hopTimeout: getCircuitRelayHopTimeoutMs(),
+        reservations: {
+          maxReservations: getCircuitRelayMaxReservations(),
+          reservationTtl: getCircuitRelayReservationTtlMs(),
+          defaultDataLimit: getCircuitRelayDefaultDataLimitBytes(),
+          defaultDurationLimit: getCircuitRelayDefaultDurationLimitMs(),
+        },
+      }),
+      identify: identify(),
+      identifyPush: identifyPush(),
+      pubsub: gossipsub({ allowPublishToZeroTopicPeers: true }),
+      ...(!process.env.disableAutoTLS && {
+        autoTLS: autoTLS({
+          autoConfirmAddress: true,
+          ...(process.env.STAGING === 'true' && {
+            acmeDirectory: 'https://acme-staging-v02.api.letsencrypt.org/directory',
+          }),
         }),
       }),
-    }),
-    keychain: keychain(),
-  },
-  connectionGater: {
-    denyDialMultiaddr: async () => false,
-  },
-} as any)
+      keychain: keychain(),
+    },
+    connectionGater: {
+      denyDialMultiaddr: async () => false,
+    },
+  } as any
+}

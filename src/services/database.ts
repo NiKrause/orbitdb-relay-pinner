@@ -14,14 +14,20 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { inspect } from 'node:util'
 import PQueue from 'p-queue'
 
-import { MetricsServer } from './metrics.js'
+import { MetricsServer, type PinningHttpHandlers } from './metrics.js'
 import { log, syncLog, logSyncStats } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
 import IPFSAccessController from '../access/ipfs-access-controller.js'
-import DelegatedTodoAccessController from '../access/delegated-todo-access-controller.js'
+import DelegatedTodoAccessControllerBase from '@le-space/orbitdb-access-controller-delegated-todo'
 import DeferredOrbitDBAccessController from '../access/deferred-orbitdb-access-controller.js'
 import { verifyIdentityWithFallback } from '../access/shared.js'
-import { inspectWorkerEd25519Identity, verifyWorkerEd25519Identity } from '../identity/worker-ed25519.js'
+import { createRelayVerifyIdentityFallback, defaultRelayVerifyIdentityDeps } from '../identity/relay-verify-fallback.js'
+import { inspectWorkerEd25519Identity } from '../identity/worker-ed25519.js'
+
+/** Relay: same delegated AC as clients, without verbose browser logging. */
+const DelegatedTodoAccessController = (opts: { write?: string[] } = {}) =>
+  DelegatedTodoAccessControllerBase({ ...opts, verbose: false })
+;(DelegatedTodoAccessController as any).type = (DelegatedTodoAccessControllerBase as any).type
 
 const DEFERRED_ACL_PREFIX = '/orbitdb-deferred/'
 const ORBITDB_PREFIX = '/orbitdb/'
@@ -40,6 +46,10 @@ export class DatabaseService {
   isShuttingDown: boolean
   orbitdb: any
   ipfs: any
+  /** Count of sync attempts started (HTTP + pubsub; excludes duplicate coalesced waits). */
+  pinningSyncOperations: number
+  pinningFailedSyncs: number
+  pinnedDatabasesByAddress: Map<string, { address: string; lastSyncedAt: string }>
 
   constructor() {
     this.metrics = new MetricsServer()
@@ -53,6 +63,171 @@ export class DatabaseService {
     this.queuedImageCids = new Set()
     this.pinnedImageCids = new Set()
     this.isShuttingDown = false
+    this.pinningSyncOperations = 0
+    this.pinningFailedSyncs = 0
+    this.pinnedDatabasesByAddress = new Map()
+  }
+
+  createPinningHttpHandlers(): PinningHttpHandlers {
+    return {
+      getStats: () => ({
+        totalPinned: this.pinnedDatabasesByAddress.size,
+        syncOperations: this.pinningSyncOperations,
+        failedSyncs: this.pinningFailedSyncs,
+        pinnedMediaCids: Array.from(this.pinnedImageCids),
+        timestamp: new Date().toISOString(),
+      }),
+      getDatabases: () => {
+        const databases = Array.from(this.pinnedDatabasesByAddress.values())
+        return { databases, total: databases.length }
+      },
+      syncDatabase: async (dbAddress: string) => {
+        try {
+          const r = await this.syncAllOrbitDBRecordsWithResult(dbAddress)
+          if (!r.success) {
+            return { ok: false, error: 'Sync failed' }
+          }
+          return {
+            ok: true,
+            receivedUpdate: r.receivedUpdate,
+            fallbackScanUsed: r.fallbackScanUsed,
+            extractedMediaCids: r.extractedMediaCids,
+            ...(r.coalesced ? { coalesced: true } : {}),
+          }
+        } catch (e: any) {
+          return { ok: false, error: e?.message || String(e) }
+        }
+      },
+    }
+  }
+
+  /**
+   * Same as {@link syncAllOrbitDBRecords} but returns structured result for HTTP `/pinning/sync`
+   * and observability.
+   */
+  private async syncAllOrbitDBRecordsWithResult(
+    dbAddress: string
+  ): Promise<{
+    success: boolean
+    receivedUpdate: boolean
+    fallbackScanUsed: boolean
+    extractedMediaCids: string[]
+    coalesced?: boolean
+  }> {
+    const empty = {
+      success: false as const,
+      receivedUpdate: false,
+      fallbackScanUsed: false,
+      extractedMediaCids: [] as string[],
+    }
+    if (this.isShuttingDown) return empty
+    const existing = this.syncInFlight.get(dbAddress)
+    if (existing) {
+      syncLog('Sync already in progress for database, skipping duplicate request:', dbAddress)
+      await existing
+      const ok = this.pinnedDatabasesByAddress.has(dbAddress)
+      return {
+        success: ok,
+        receivedUpdate: false,
+        fallbackScanUsed: false,
+        extractedMediaCids: [],
+        coalesced: true,
+      }
+    }
+
+    const syncPromise = (async (): Promise<{
+      success: boolean
+      receivedUpdate: boolean
+      fallbackScanUsed: boolean
+      extractedMediaCids: string[]
+    }> => {
+      this.pinningSyncOperations++
+      syncLog('Starting sync for database:', dbAddress)
+      const endTimer = this.metrics.startSyncTimer('all_databases')
+      let db: any
+      let aclDb: any
+      let success = false
+      let receivedUpdate = false
+      let fallbackScanUsed = false
+      let extractedMediaCids: string[] = []
+
+      try {
+        aclDb = await this.preOpenAccessController(dbAddress)
+        syncLog('Opening database:', dbAddress)
+        db = await this.openDatabase(dbAddress)
+        syncLog('Opened database:', dbAddress)
+        this.installAccessControllerDebugHooks(db, dbAddress)
+
+        syncLog('Waiting for database update event:', dbAddress)
+        const { didReceiveUpdate, updates } = await this.waitForUpdateEvent(db)
+        if (!didReceiveUpdate) {
+          syncLog('No update event received within timeout:', dbAddress)
+        } else {
+          syncLog('Received update event for database:', dbAddress, 'updates:', updates.length)
+        }
+
+        if (didReceiveUpdate) {
+          receivedUpdate = true
+          const updateRecords = updates.map((entry) => ({ value: entry?.payload?.value ?? entry?.value ?? entry }))
+          extractedMediaCids = this.extractImageCids(updateRecords)
+          syncLog('Extracted media CIDs from updates:', dbAddress, 'count:', extractedMediaCids.length)
+          this.enqueueImageCidsForPinning(extractedMediaCids)
+        } else if (typeof db?.all === 'function') {
+          // HTTP sync often runs after the writer already replicated; no new `update` may fire.
+          syncLog('Falling back to db.all() scan for media CIDs:', dbAddress)
+          try {
+            const all = await db.all()
+            const rows = Array.isArray(all) ? all : []
+            extractedMediaCids = this.extractImageCids(rows.map((row: any) => ({ value: row?.value ?? row })))
+            if (extractedMediaCids.length > 0) {
+              fallbackScanUsed = true
+              this.enqueueImageCidsForPinning(extractedMediaCids)
+              syncLog('Extracted media CIDs from db.all():', dbAddress, 'count:', extractedMediaCids.length)
+            }
+          } catch (scanErr: any) {
+            syncLog('db.all() fallback failed:', dbAddress, scanErr?.message || scanErr)
+          }
+        }
+
+        this.metrics.trackSync('documents', 'success')
+        endTimer()
+        this.pinnedDatabasesByAddress.set(dbAddress, {
+          address: dbAddress,
+          lastSyncedAt: new Date().toISOString(),
+        })
+        success = true
+      } catch (err: any) {
+        this.pinningFailedSyncs++
+        this.metrics.trackSync('documents', 'failure')
+        endTimer()
+        if (loggingConfig.logLevels.database) {
+          // eslint-disable-next-line no-console
+          console.error('Failed to sync database:', err)
+        }
+      } finally {
+        try {
+          await db?.close?.()
+        } catch {
+          // ignore close failures
+        }
+        try {
+          if (aclDb && aclDb !== db) {
+            await aclDb.close?.()
+          }
+        } catch {
+          // ignore close failures
+        }
+      }
+
+      return { success, receivedUpdate, fallbackScanUsed, extractedMediaCids }
+    })()
+
+    this.syncInFlight.set(dbAddress, syncPromise.then(() => {}))
+    try {
+      return await syncPromise
+    } finally {
+      this.syncInFlight.delete(dbAddress)
+    }
   }
 
   async initialize(ipfs: any, directory?: string) {
@@ -76,36 +251,7 @@ export class DatabaseService {
       // Only run DID JWS verification for `did` identities. The DID provider's verifyIdentity
       // builds a JWS from signatures.publicKey; calling it for webauthn / varsig shapes hits
       // dids ("No kid found in jws") or unhandled rejections because verifyJWS is not awaited upstream.
-      verifyIdentityFallback: async (identity: any) => {
-        if (!identity) return false
-        const t = identity?.type
-        if (t === 'did') {
-          try {
-            return await OrbitDBIdentityProviderDID.verifyIdentity(identity)
-          } catch {
-            return false
-          }
-        }
-        if (t === 'webauthn' && typeof (OrbitDBWebAuthnIdentityProviderFunction as any).verifyIdentity === 'function') {
-          try {
-            return await (OrbitDBWebAuthnIdentityProviderFunction as any).verifyIdentity(identity)
-          } catch {
-            return false
-          }
-        }
-        if (t === 'webauthn-varsig') {
-          try {
-            return await verifyVarsigIdentity(identity)
-          } catch {
-            return false
-          }
-        }
-        try {
-          return await verifyWorkerEd25519Identity(identity)
-        } catch {
-          return false
-        }
-      }
+      verifyIdentityFallback: createRelayVerifyIdentityFallback(defaultRelayVerifyIdentityDeps())
     }
 
     this.orbitdb = await createOrbitDB({
@@ -587,72 +733,7 @@ export class DatabaseService {
 
   async syncAllOrbitDBRecords(dbAddress: string) {
     if (this.isShuttingDown) return
-    const existing = this.syncInFlight.get(dbAddress)
-    if (existing) {
-      syncLog('Sync already in progress for database, skipping duplicate request:', dbAddress)
-      await existing
-      return
-    }
-
-    const syncPromise = (async () => {
-      syncLog('Starting sync for database:', dbAddress)
-      const endTimer = this.metrics.startSyncTimer('all_databases')
-      let db: any
-      let aclDb: any
-
-      try {
-        aclDb = await this.preOpenAccessController(dbAddress)
-        syncLog('Opening database:', dbAddress)
-        db = await this.openDatabase(dbAddress)
-        syncLog('Opened database:', dbAddress)
-        this.installAccessControllerDebugHooks(db, dbAddress)
-
-        syncLog('Waiting for database update event:', dbAddress)
-        const { didReceiveUpdate, updates } = await this.waitForUpdateEvent(db)
-        if (!didReceiveUpdate) {
-          syncLog('No update event received within timeout:', dbAddress)
-        } else {
-          syncLog('Received update event for database:', dbAddress, 'updates:', updates.length)
-        }
-
-        if (didReceiveUpdate) {
-          const updateRecords = updates.map((entry) => ({ value: entry?.payload?.value ?? entry?.value ?? entry }))
-          const imageCids = this.extractImageCids(updateRecords)
-          syncLog('Extracted media CIDs from updates:', dbAddress, 'count:', imageCids.length)
-          this.enqueueImageCidsForPinning(imageCids)
-        }
-
-        this.metrics.trackSync('documents', 'success')
-        endTimer()
-      } catch (err: any) {
-        this.metrics.trackSync('documents', 'failure')
-        endTimer()
-        if (loggingConfig.logLevels.database) {
-          // eslint-disable-next-line no-console
-          console.error('Failed to sync database:', err)
-        }
-      } finally {
-        try {
-          await db?.close?.()
-        } catch {
-          // ignore close failures
-        }
-        try {
-          if (aclDb && aclDb !== db) {
-            await aclDb.close?.()
-          }
-        } catch {
-          // ignore close failures
-        }
-      }
-    })()
-
-    this.syncInFlight.set(dbAddress, syncPromise)
-    try {
-      await syncPromise
-    } finally {
-      this.syncInFlight.delete(dbAddress)
-    }
+    await this.syncAllOrbitDBRecordsWithResult(dbAddress)
   }
 
   beginShutdown() {

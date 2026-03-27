@@ -1,6 +1,6 @@
 {
   "name": "orbitdb-relay-pinner",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "private": false,
   "type": "module",
   "description": "OrbitDB relay + pinning/sync service for Helia/libp2p stacks.",
@@ -27,7 +27,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    ".env.example"
   ],
   "main": "./dist/index.js",
   "exports": {
@@ -41,8 +42,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/add-shebang.mjs",
-    "test": "npm run build && mocha --timeout 180000 \"test/**/*.test.mjs\"",
-    "test:integration:relay-media": "npm run build && mocha --timeout 180000 \"test/relay-media-replication.test.mjs\"",
+    "test": "npm run build && mocha --timeout 180000 \"mocha/**/*.mjs\"",
+    "test:integration:relay-media": "npm run build && mocha --timeout 180000 \"mocha/relay-media-replication.mjs\"",
     "prepack": "npm run build"
   },
   "overrides": {
@@ -56,6 +57,7 @@
     "@chainsafe/libp2p-noise": "^16.1.4",
     "@chainsafe/libp2p-yamux": "^7.0.4",
     "@ipshipyard/libp2p-auto-tls": "^1.0.0",
+    "@le-space/orbitdb-access-controller-delegated-todo": "^0.1.0",
     "@le-space/orbitdb-identity-provider-webauthn-did": "^0.2.10",
     "@libp2p/autonat": "^2.0.38",
     "@libp2p/circuit-relay-v2": "^3.2.24",

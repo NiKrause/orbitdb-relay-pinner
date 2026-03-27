@@ -63,7 +63,7 @@ Configured in `src/config/libp2p.ts`:
   - `/webrtc-direct` over UDP (default `9093`, can be disabled)
   - Optional IPv6 listeners (can be disabled)
 - Services:
-  - Circuit relay v2 server (`@libp2p/circuit-relay-v2`) with reservation limits
+  - Circuit relay v2 server (`@libp2p/circuit-relay-v2`) with reservation limits (env-tunable via `RELAY_CIRCUIT_*`; defaults in `src/config/circuit-relay-env.ts`, see `.env.example`)
   - Pubsub: gossipsub (`@chainsafe/libp2p-gossipsub`)
   - Peer discovery: pubsub-based (`@libp2p/pubsub-peer-discovery`)
   - Identify / identifyPush, ping, AutoNAT

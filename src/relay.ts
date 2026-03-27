@@ -100,7 +100,10 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
 
   const cleanupEventHandlers = await setupEventHandlers(libp2p as any, databaseService as any)
 
-  const metricsServer = new MetricsServer({ getLibp2p: () => libp2p as any })
+  const metricsServer = new MetricsServer({
+    getLibp2p: () => libp2p as any,
+    pinning: databaseService.createPinningHttpHandlers(),
+  })
   await metricsServer.start()
 
   if (loggingConfig.enableGeneralLogs) {

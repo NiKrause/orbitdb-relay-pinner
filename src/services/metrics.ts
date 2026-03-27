@@ -13,8 +13,29 @@ type Libp2pLike = {
   getConnections?: () => unknown[]
 }
 
+/** Result of POST `/pinning/sync` (also embedded in JSON response with `dbAddress`). */
+export type PinningSyncResult = {
+  ok: boolean
+  error?: string
+  /** Relay observed at least one OrbitDB `update` while syncing this address. */
+  receivedUpdate?: boolean
+  /** True when no live `update` arrived and media CIDs were taken from `db.all()` instead. */
+  fallbackScanUsed?: boolean
+  /** Media CIDs extracted from updates and/or `db.all()` fallback (same field rules as update-driven pinning). */
+  extractedMediaCids?: string[]
+  /** True when this request waited on another in-flight sync for the same address. */
+  coalesced?: boolean
+}
+
+export type PinningHttpHandlers = {
+  getStats: () => Record<string, unknown>
+  getDatabases: () => { databases: Array<Record<string, unknown>>; total: number }
+  syncDatabase: (dbAddress: string) => Promise<PinningSyncResult>
+}
+
 type MetricsServerOptions = {
   getLibp2p?: () => Libp2pLike | null
+  pinning?: PinningHttpHandlers
 }
 
 const syncCounter = new client.Counter({
@@ -71,6 +92,9 @@ export class MetricsServer {
     if (options.getLibp2p) {
       metricsInstance.options.getLibp2p = options.getLibp2p
     }
+    if (options.pinning) {
+      metricsInstance.options.pinning = options.pinning
+    }
 
     return metricsInstance
   }
@@ -103,15 +127,84 @@ export class MetricsServer {
 
     const desiredPort = typeof port === 'string' ? Number(port) : port
 
+    const readJsonBody = (req: http.IncomingMessage): Promise<unknown> =>
+      new Promise((resolve, reject) => {
+        const chunks: Buffer[] = []
+        req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+        req.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8')
+          if (!raw.trim()) {
+            resolve({})
+            return
+          }
+          try {
+            resolve(JSON.parse(raw))
+          } catch (e) {
+            reject(e)
+          }
+        })
+        req.on('error', reject)
+      })
+
+    const pathnameOnly = (url: string | undefined) => (url || '/').split('?')[0] || '/'
+
     const createServer = () =>
       http.createServer(async (req, res) => {
-        if (req.url === '/metrics') {
+        const pathname = pathnameOnly(req.url)
+        const pinning = this.options.pinning
+
+        if (pinning && pathname === '/pinning/stats' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(pinning.getStats()))
+          return
+        }
+
+        if (pinning && pathname === '/pinning/databases' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(pinning.getDatabases()))
+          return
+        }
+
+        if (pinning && pathname === '/pinning/sync' && req.method === 'POST') {
+          res.setHeader('Content-Type', 'application/json')
+          try {
+            const body = (await readJsonBody(req)) as { dbAddress?: string }
+            const dbAddress = typeof body?.dbAddress === 'string' ? body.dbAddress.trim() : ''
+            if (!dbAddress) {
+              res.statusCode = 400
+              res.end(JSON.stringify({ ok: false, error: 'Missing or invalid dbAddress' }))
+              return
+            }
+            const result = await pinning.syncDatabase(dbAddress)
+            res.statusCode = result.ok ? 200 : 500
+            if (result.ok) {
+              res.end(
+                JSON.stringify({
+                  ok: true,
+                  dbAddress,
+                  receivedUpdate: result.receivedUpdate,
+                  fallbackScanUsed: result.fallbackScanUsed,
+                  extractedMediaCids: result.extractedMediaCids,
+                  ...(result.coalesced ? { coalesced: true } : {}),
+                })
+              )
+            } else {
+              res.end(JSON.stringify({ ok: false, error: result.error || 'sync failed' }))
+            }
+          } catch (e: any) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ ok: false, error: e?.message || String(e) }))
+          }
+          return
+        }
+
+        if (pathname === '/metrics') {
           res.setHeader('Content-Type', client.register.contentType)
           res.end(await this.getMetrics())
           return
         }
 
-        if (req.url === '/health') {
+        if (pathname === '/health') {
           const libp2p = this.getLibp2p()
           const connections = libp2p?.getConnections?.() || []
           const multiaddrs = (libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString())
@@ -129,7 +222,7 @@ export class MetricsServer {
           return
         }
 
-        if (req.url === '/multiaddrs') {
+        if (pathname === '/multiaddrs') {
           const libp2p = this.getLibp2p()
           const all = prioritizeAddresses((libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString()))
           const byTransport = {

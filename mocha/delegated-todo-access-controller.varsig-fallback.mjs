@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { verifyIdentityWithFallback } from '../dist/access/delegated-todo-access-controller.js'
+import { verifyIdentityWithFallback } from '@le-space/orbitdb-access-controller-delegated-todo'
 
 describe('delegated todo access controller varsig fallback', function () {
   it('uses verifyIdentityFallback when verifyIdentity throws unsupported varsig header', async () => {

@@ -87,7 +87,7 @@ This reduces hanging test runs and avoids lingering background tasks.
 
 Integration coverage exists in:
 
-- `test/relay-media-replication.test.mjs`
+- `mocha/relay-media-replication.mjs`
 
 Scenario:
 
@@ -99,6 +99,6 @@ Scenario:
 
 Additional unit-style integration coverage:
 
-- `test/database-update-event-pinning.test.mjs`
+- `mocha/database-update-event-pinning.mjs`
 
 This verifies that a single update event triggers pinning and that `db.all()` is not used for this update-driven pinning path.
