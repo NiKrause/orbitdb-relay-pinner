@@ -5,6 +5,7 @@ import {
 } from '@le-space/orbitdb-identity-provider-webauthn-did'
 import OrbitDBIdentityProviderDID from '@orbitdb/identity-provider-did'
 import * as KeyDIDResolver from 'key-did-resolver'
+import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import * as Block from 'multiformats/block'
 import * as dagCbor from '@ipld/dag-cbor'
@@ -14,7 +15,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { inspect } from 'node:util'
 import PQueue from 'p-queue'
 
-import { MetricsServer, type PinningHttpHandlers } from './metrics.js'
+import { MetricsServer, type PinningHttpHandlers, type StreamPinnedCidResult } from './metrics.js'
 import { log, syncLog, logSyncStats } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
 import IPFSAccessController from '../access/ipfs-access-controller.js'
@@ -98,6 +99,58 @@ export class DatabaseService {
           return { ok: false, error: e?.message || String(e) }
         }
       },
+      streamPinnedCid: (cidStr: string, pathWithin?: string) => this.streamPinnedIpfsContent(cidStr, pathWithin),
+    }
+  }
+
+  /**
+   * GET `/ipfs/<cid>` — stream content only when the CID is pinned in Helia and all bytes come from the local blockstore.
+   */
+  private async streamPinnedIpfsContent(cidStr: string, pathWithin?: string): Promise<StreamPinnedCidResult> {
+    if (!this.ipfs?.pins?.isPinned || !this.ipfs?.blockstore?.get) {
+      return { ok: false, status: 503, error: 'IPFS node not available' }
+    }
+
+    let cid: CID
+    try {
+      cid = CID.parse(cidStr)
+    } catch {
+      return { ok: false, status: 400, error: 'Invalid CID' }
+    }
+
+    let pinned: boolean
+    try {
+      pinned = await this.ipfs.pins.isPinned(cid)
+    } catch {
+      return { ok: false, status: 500, error: 'Pin check failed' }
+    }
+    if (!pinned) {
+      return { ok: false, status: 404, error: 'CID is not pinned locally' }
+    }
+
+    const ufs = unixfs(this.ipfs)
+    const statOpts = { offline: true as const, ...(pathWithin ? { path: pathWithin } : {}) }
+
+    try {
+      const st = await ufs.stat(cid, statOpts)
+      if (st.type === 'directory') {
+        return { ok: false, status: 400, error: 'Directory download is not supported; specify a file path under the CID' }
+      }
+      const chunks = ufs.cat(cid, { offline: true, ...(pathWithin ? { path: pathWithin } : {}) })
+      return { ok: true, contentType: 'application/octet-stream', chunks }
+    } catch {
+      try {
+        if (pathWithin) {
+          return { ok: false, status: 404, error: 'Content not available locally at path' }
+        }
+        const block = await this.ipfs.blockstore.get(cid, { offline: true })
+        async function* single() {
+          yield block
+        }
+        return { ok: true, contentType: 'application/octet-stream', chunks: single() }
+      } catch {
+        return { ok: false, status: 404, error: 'Content not available locally' }
+      }
     }
   }
 

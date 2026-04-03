@@ -65,7 +65,7 @@ Configured in `src/config/libp2p.ts`:
 - Services:
   - Circuit relay v2 server (`@libp2p/circuit-relay-v2`) with reservation limits (env-tunable via `RELAY_CIRCUIT_*`; defaults in `src/config/circuit-relay-env.ts`, see `.env.example`)
   - Pubsub: gossipsub (`@chainsafe/libp2p-gossipsub`)
-  - Peer discovery: pubsub-based (`@libp2p/pubsub-peer-discovery`)
+  - Peer discovery: public IPFS/libp2p bootstrap nodes (`@libp2p/bootstrap`, same list as Helia/Kubo; disable with `RELAY_DISABLE_BOOTSTRAP=1`), plus pubsub-based (`@libp2p/pubsub-peer-discovery`)
   - Identify / identifyPush, ping, AutoNAT
   - Optional AutoTLS (`@ipshipyard/libp2p-auto-tls`) unless `disableAutoTLS` is set
   - DHT (`@libp2p/kad-dht`) registered as `aminoDHT` using protocol `/ipfs/kad/1.0.0`
@@ -129,6 +129,7 @@ Important caveat for agents:
 
 - HTTP server exposes:
   - `GET /metrics` for Prometheus scraping
+  - `GET /health`, `GET /multiaddrs`, pinning JSON routes (`/pinning/*`), and `GET /ipfs/<cid>` (pinned-local bytes only; see `streamPinnedCid` in `DatabaseService`)
 - Defaults to port `9090`, but handles `EADDRINUSE` by retrying on an ephemeral port if the requested port is not `0`.
 - Uses a singleton instance so creating `MetricsServer` multiple times does not double-register metrics.
 - Supports explicit `stop()` to close the HTTP server on relay shutdown.
@@ -149,6 +150,7 @@ Important caveat for agents:
 - `RELAY_LISTEN_IPV6` (default `::`)
 - `RELAY_DISABLE_IPV6=true|1`
 - `RELAY_DISABLE_WEBRTC=true|1`
+- `RELAY_DISABLE_BOOTSTRAP=true|1`: skip default public bootstrap peers (tests use this; isolated deployments only)
 - `PUBSUB_TOPICS` or `VITE_PUBSUB_TOPICS`: comma-separated pubsub peer discovery topics
 - `VITE_APPEND_ANNOUNCE` / `VITE_APPEND_ANNOUNCE_DEV`: comma-separated multiaddrs to append to announce set
 - `disableAutoTLS` (truthy): disables AutoTLS service creation

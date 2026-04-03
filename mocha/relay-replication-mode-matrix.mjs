@@ -52,6 +52,7 @@ describe('relay replication (simple-todo mode matrix labels, Node stack)', funct
       'RELAY_WEBRTC_PORT',
       'RELAY_DISABLE_WEBRTC',
       'RELAY_DISABLE_IPV6',
+      'RELAY_DISABLE_BOOTSTRAP',
       'RELAY_LISTEN_IPV4',
       'METRICS_PORT',
       'METRICS_DISABLED',
@@ -66,6 +67,7 @@ describe('relay replication (simple-todo mode matrix labels, Node stack)', funct
     process.env.RELAY_WEBRTC_PORT = '0'
     process.env.RELAY_DISABLE_WEBRTC = '1'
     process.env.RELAY_DISABLE_IPV6 = '1'
+    process.env.RELAY_DISABLE_BOOTSTRAP = '1'
     process.env.RELAY_LISTEN_IPV4 = '127.0.0.1'
     metricsPort = 22492 + Math.floor(Math.random() * 1000)
     process.env.METRICS_PORT = String(metricsPort)

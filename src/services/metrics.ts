@@ -27,10 +27,20 @@ export type PinningSyncResult = {
   coalesced?: boolean
 }
 
+/** Result of {@link PinningHttpHandlers.streamPinnedCid} for GET `/ipfs/...`. */
+export type StreamPinnedCidResult =
+  | { ok: true; contentType?: string; chunks: AsyncIterable<Uint8Array> }
+  | { ok: false; status: number; error: string }
+
 export type PinningHttpHandlers = {
   getStats: () => Record<string, unknown>
   getDatabases: () => { databases: Array<Record<string, unknown>>; total: number }
   syncDatabase: (dbAddress: string) => Promise<PinningSyncResult>
+  /**
+   * Stream bytes for a CID only if it is pinned in Helia and only from local storage
+   * (`offline` / no network fetch). Optional `pathWithin` is a UnixFS path inside a directory CID.
+   */
+  streamPinnedCid?: (cidStr: string, pathWithin?: string) => Promise<StreamPinnedCidResult>
 }
 
 type MetricsServerOptions = {
@@ -194,6 +204,57 @@ export class MetricsServer {
           } catch (e: any) {
             res.statusCode = 400
             res.end(JSON.stringify({ ok: false, error: e?.message || String(e) }))
+          }
+          return
+        }
+
+        if (pinning?.streamPinnedCid && req.method === 'GET' && pathname.startsWith('/ipfs/')) {
+          const tail = pathname.slice('/ipfs/'.length)
+          let parts: string[]
+          try {
+            parts = tail.split('/').filter((p) => p.length > 0).map((p) => decodeURIComponent(p))
+          } catch {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Invalid path encoding' }))
+            return
+          }
+          if (parts.length === 0) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Missing CID' }))
+            return
+          }
+          const cidStr = parts[0]
+          const pathWithin = parts.length > 1 ? parts.slice(1).join('/') : undefined
+
+          const out = await pinning.streamPinnedCid(cidStr, pathWithin)
+          if (!out.ok) {
+            res.statusCode = out.status
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: out.error }))
+            return
+          }
+          res.statusCode = 200
+          if (out.contentType) {
+            res.setHeader('Content-Type', out.contentType)
+          }
+          res.setHeader('Cache-Control', 'private, no-store')
+          try {
+            for await (const chunk of out.chunks) {
+              if (!res.write(chunk)) {
+                await new Promise<void>((resolve) => res.once('drain', resolve))
+              }
+            }
+            res.end()
+          } catch (e: any) {
+            if (!res.writableEnded) {
+              try {
+                res.destroy(e)
+              } catch {
+                // ignore
+              }
+            }
           }
           return
         }

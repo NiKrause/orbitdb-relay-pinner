@@ -25,6 +25,7 @@ import {
   getCircuitRelayMaxReservations,
   getCircuitRelayReservationTtlMs,
 } from './circuit-relay-env.js'
+import { IPFS_PUBLIC_BOOTSTRAP_LIST } from './ipfs-bootstrap-peers.js'
 
 /** Read env at config build time so tests (and multiple `startRelay` calls) can change ports between runs. */
 function readRelayListenEnv() {
@@ -45,6 +46,8 @@ function readRelayListenEnv() {
   const disableIpv6 = process.env.RELAY_DISABLE_IPV6 === 'true' || process.env.RELAY_DISABLE_IPV6 === '1'
   const disableWebRtc =
     process.env.RELAY_DISABLE_WEBRTC === 'true' || process.env.RELAY_DISABLE_WEBRTC === '1'
+  const disableBootstrap =
+    process.env.RELAY_DISABLE_BOOTSTRAP === 'true' || process.env.RELAY_DISABLE_BOOTSTRAP === '1'
 
   const pubsubTopics = (
     process.env.PUBSUB_TOPICS ||
@@ -64,6 +67,7 @@ function readRelayListenEnv() {
     listenIpv6,
     disableIpv6,
     disableWebRtc,
+    disableBootstrap,
     pubsubTopics,
   }
 }
@@ -97,6 +101,13 @@ export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore)
       webSockets(),
     ],
     peerDiscovery: [
+      ...(!e.disableBootstrap
+        ? [
+            bootstrap({
+              list: IPFS_PUBLIC_BOOTSTRAP_LIST,
+            }),
+          ]
+        : []),
       pubsubPeerDiscovery({
         interval: 5000,
         topics: e.pubsubTopics,
