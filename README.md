@@ -72,6 +72,7 @@ See **`.env.example`** for a full list including **circuit relay v2** tuning (`R
 - `RELAY_TCP_PORT`, `RELAY_WS_PORT`, `RELAY_WEBRTC_PORT`
 - `RELAY_DISABLE_WEBRTC=true` to disable UDP `/webrtc-direct` listener in constrained environments
 - `METRICS_PORT=0` to bind metrics on an ephemeral port (avoid `EADDRINUSE`)
+- `METRICS_CORS_ORIGIN` — CORS for HTTP helpers (`/health`, `/multiaddrs`, `/pinning/*`, …); default `*`; use a comma-separated origin allowlist in production
 - `DATASTORE_PATH` or `RELAY_DATASTORE_PATH` to control where LevelDB data is stored
 - `PUBSUB_TOPICS` to override pubsub peer discovery topics (default: `todo._peer-discovery._p2p._pubsub`)
 - `TEST_PRIVATE_KEY` / `RELAY_PRIV_KEY` for `--test` runs (optional)

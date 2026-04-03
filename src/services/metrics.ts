@@ -85,6 +85,45 @@ function prioritizeAddresses(addrs: string[]): string[] {
   })
 }
 
+/** `*` or comma-separated exact origins (scheme+host+port). See `METRICS_CORS_ORIGIN`. */
+type CorsOriginConfig = '*' | string[]
+
+function readCorsOriginConfig(): CorsOriginConfig {
+  const raw = process.env.METRICS_CORS_ORIGIN?.trim()
+  if (!raw || raw === '*') return '*'
+  const list = raw
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean)
+  return list.length > 0 ? list : '*'
+}
+
+/**
+ * Cross-origin browser access (dashboards, dev servers). Sets headers for preflight and responses.
+ * `METRICS_CORS_ORIGIN=*` (default) allows any origin. Use a comma-separated allowlist for production.
+ */
+function applyCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse, config: CorsOriginConfig) {
+  const requestOrigin = req.headers.origin
+  let allowOrigin: string | undefined
+  if (config === '*') {
+    allowOrigin = '*'
+  } else if (requestOrigin && config.includes(requestOrigin)) {
+    allowOrigin = requestOrigin
+    res.setHeader('Vary', 'Origin')
+  }
+
+  if (allowOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowOrigin)
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD')
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    process.env.METRICS_CORS_ALLOW_HEADERS?.trim() || 'Content-Type, Authorization',
+  )
+  res.setHeader('Access-Control-Max-Age', process.env.METRICS_CORS_MAX_AGE?.trim() || '86400')
+}
+
 export class MetricsServer {
   server: http.Server | null
   startPromise: Promise<http.Server | null> | null
@@ -158,10 +197,20 @@ export class MetricsServer {
 
     const pathnameOnly = (url: string | undefined) => (url || '/').split('?')[0] || '/'
 
+    const corsConfig = readCorsOriginConfig()
+
     const createServer = () =>
       http.createServer(async (req, res) => {
         const pathname = pathnameOnly(req.url)
         const pinning = this.options.pinning
+
+        applyCorsHeaders(req, res, corsConfig)
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
 
         if (pinning && pathname === '/pinning/stats' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json')
