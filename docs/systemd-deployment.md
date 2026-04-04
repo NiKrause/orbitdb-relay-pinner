@@ -2,7 +2,7 @@
 
 This guide installs **`orbitdb-relay-pinner`** under **systemd** on a Linux VPS or bare-metal host that may also run **Kubo**, without **nginx** (or any other reverse proxy) for libp2p TLS. **Secure WebSockets** come from **AutoTLS** (`@ipshipyard/libp2p-auto-tls`): a certificate for **`<peerId>.libp2p.direct`** via [registration.libp2p.direct](https://registration.libp2p.direct) and Let’s Encrypt DNS-01 (see the upstream walkthrough: [libp2p/js-libp2p-example-auto-tls](https://github.com/libp2p/js-libp2p-example-auto-tls)).
 
-> **From your laptop:** SSH in and run the steps below (or use `deploy/install-on-server.sh` from this repo). Automated agents in CI sandboxes often **cannot** resolve or reach your private relay hostname.
+> **From your laptop:** SSH in and run the steps below (or use `deploy/install-on-server.sh` from this repo). Example second relay host: **`ssh root@relay2.seidenwege.com`**. Automated agents in CI sandboxes often **cannot** resolve or reach your private relay hostname.
 
 ## Port plan vs Kubo
 
@@ -79,7 +79,7 @@ sudo tee /opt/orbitdb-relay-pinner/package.json >/dev/null <<'EOF'
   "private": true,
   "type": "module",
   "dependencies": {
-    "orbitdb-relay-pinner": "^0.5.0"
+    "orbitdb-relay-pinner": "^0.6.2"
   }
 }
 EOF
@@ -100,7 +100,7 @@ sudo chown root:orbitdb-relay /etc/default/orbitdb-relay-pinner
 Edit `/etc/default/orbitdb-relay-pinner`:
 
 1. **`DATASTORE_PATH=/var/lib/orbitdb-relay-pinner`**
-2. **`VITE_APPEND_ANNOUNCE`** — set to your **public IPv4** and ports **28191–28193**. Example for **`relay.seidenwege.com`** at `203.0.113.7`:
+2. **`VITE_APPEND_ANNOUNCE`** — set to your **public IPv4** and ports **28191–28193**. Example for **`relay2.seidenwege.com`** (or **`relay.seidenwege.com`**) at `203.0.113.7`:
 
    ```bash
    VITE_APPEND_ANNOUNCE=/ip4/203.0.113.7/tcp/28191,/ip4/203.0.113.7/tcp/28192/ws,/ip4/203.0.113.7/udp/28193/webrtc-direct
@@ -139,7 +139,7 @@ sudo ufw reload
    curl -sS http://127.0.0.1:28190/health
    ```
 
-   After issuance, expect multiaddrs containing **`/tls/ws`** (often with SNI / `*.libp2p.direct` style names as in the [upstream example output](https://github.com/libp2p/js-libp2p-example-auto-tls)). The cert is for **libp2p.direct**, not `relay.seidenwege.com`.
+   After issuance, expect multiaddrs containing **`/tls/ws`** (often with SNI / `*.libp2p.direct` style names as in the [upstream example output](https://github.com/libp2p/js-libp2p-example-auto-tls)). The cert is for **libp2p.direct**, not your vanity hostname (e.g. `relay2.seidenwege.com`).
 
 ## Why no nginx-proxy
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run as root on the relay host (e.g. after: ssh root@relay.seidenwege.com).
+# Run as root on the relay host (e.g. after: ssh root@relay2.seidenwege.com).
 # Installs orbitdb-relay-pinner under systemd with Kubo-disjoint ports 28190–28193.
 set -euo pipefail
 
@@ -39,7 +39,7 @@ tee "${INSTALL_ROOT}/package.json" >/dev/null <<'EOF'
   "private": true,
   "type": "module",
   "dependencies": {
-    "orbitdb-relay-pinner": "^0.5.0"
+    "orbitdb-relay-pinner": "^0.6.2"
   }
 }
 EOF
