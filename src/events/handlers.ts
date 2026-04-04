@@ -1,6 +1,8 @@
 import { identify } from '@libp2p/identify'
 import PQueue from 'p-queue'
 import { WebSocketsSecure } from '@multiformats/multiaddr-matcher'
+import { inspect } from 'node:util'
+
 import { log, syncLog } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
 
@@ -23,10 +25,12 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
           if (error?.code !== 'ERR_NOT_FOUND') throw error
         }
         const protocols = peerRecord?.protocols ?? []
-        syncLog('Peer protocols after identify:', {
-          peerId,
-          protocols: Array.isArray(protocols) ? protocols : Array.from(protocols || []),
-        })
+        if (loggingConfig.logLevels.peer) {
+          log('peer:protocols-after-identify', {
+            peerId,
+            protocols: Array.isArray(protocols) ? protocols : Array.from(protocols || []),
+          })
+        }
       } catch {}
     } catch (err: any) {
       if (err?.code !== 'ERR_UNSUPPORTED_PROTOCOL' && loggingConfig.logLevels.peer) {
@@ -71,7 +75,17 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
     try {
       await pubsub.subscribe(topic)
       subscribedOrbitdbTopics.add(topic)
-      syncLog('Explicitly subscribed relay pubsub to OrbitDB topic:', topic)
+      await databaseService.prefetchManifestForLogging?.(topic)
+      {
+        const dbName = databaseService.getCachedDbName?.(topic)
+        syncLog(
+          'Explicitly subscribed relay pubsub to OrbitDB topic:',
+          inspect(
+            dbName ? { topic, dbName } : { topic },
+            { depth: null, colors: false, compact: false }
+          )
+        )
+      }
     } catch (error: any) {
       syncLog('Failed to subscribe relay pubsub to OrbitDB topic:', topic, error?.message || String(error))
     }
@@ -80,7 +94,16 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
   const pubsubMessageHandler = (event: any) => {
     if (isShuttingDown) return
     const msg = event.detail
-    syncLog('Received pubsub message:', msg.topic)
+    if (typeof msg.topic === 'string' && msg.topic.startsWith('/orbitdb/')) {
+      const dbName = databaseService.getCachedDbName?.(msg.topic)
+      syncLog(
+        'Received pubsub message:',
+        inspect(
+          dbName ? { topic: msg.topic, dbName } : { topic: msg.topic },
+          { depth: null, colors: false, compact: false }
+        )
+      )
+    }
     if (msg.topic && msg.topic.startsWith('/orbitdb/')) {
       syncQueue.add(() => ensureOrbitdbTopicSubscribed(msg.topic))
       syncQueue.add(() => databaseService.syncAllOrbitDBRecords(msg.topic))

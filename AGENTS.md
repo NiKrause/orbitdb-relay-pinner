@@ -125,6 +125,8 @@ Important caveat for agents:
 
 ### 5. Prometheus metrics endpoint
 
+Human-facing route reference: **`docs/http-api.md`**.
+
 `src/services/metrics.ts`:
 
 - HTTP server exposes:

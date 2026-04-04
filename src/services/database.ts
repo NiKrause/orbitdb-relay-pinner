@@ -16,7 +16,7 @@ import { inspect } from 'node:util'
 import PQueue from 'p-queue'
 
 import { MetricsServer, type PinningHttpHandlers, type StreamPinnedCidResult } from './metrics.js'
-import { log, syncLog, logSyncStats } from '../utils/logger.js'
+import { syncLog, logSyncStats } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
 import IPFSAccessController from '../access/ipfs-access-controller.js'
 import DelegatedTodoAccessControllerBase from '@le-space/orbitdb-access-controller-delegated-todo'
@@ -32,6 +32,9 @@ const DelegatedTodoAccessController = (opts: { write?: string[] } = {}) =>
 
 const DEFERRED_ACL_PREFIX = '/orbitdb-deferred/'
 const ORBITDB_PREFIX = '/orbitdb/'
+
+/** Deduped media CID plus which payload fields referenced it (for sync/pin logs). */
+export type ExtractedMediaCid = { cid: string; sources: string[] }
 
 export class DatabaseService {
   metrics: MetricsServer
@@ -51,6 +54,8 @@ export class DatabaseService {
   pinningSyncOperations: number
   pinningFailedSyncs: number
   pinnedDatabasesByAddress: Map<string, { address: string; lastSyncedAt: string }>
+  /** Manifest `name` by OrbitDB address (for logs / pubsub). */
+  orbitDbNameByAddress: Map<string, string>
 
   constructor() {
     this.metrics = new MetricsServer()
@@ -67,6 +72,22 @@ export class DatabaseService {
     this.pinningSyncOperations = 0
     this.pinningFailedSyncs = 0
     this.pinnedDatabasesByAddress = new Map()
+    this.orbitDbNameByAddress = new Map()
+  }
+
+  /** Resolved DB name from last successful manifest load for this address (if any). */
+  getCachedDbName(dbAddress: string): string | undefined {
+    return this.orbitDbNameByAddress.get(dbAddress)
+  }
+
+  /** Load manifest to populate {@link orbitDbNameByAddress} without sync logging (e.g. before pubsub subscribe log). */
+  async prefetchManifestForLogging(dbAddress: string): Promise<void> {
+    if (!dbAddress?.startsWith(ORBITDB_PREFIX) || this.orbitDbNameByAddress.has(dbAddress)) return
+    try {
+      await this.loadManifest(dbAddress, { quiet: true })
+    } catch {
+      // ignore
+    }
   }
 
   createPinningHttpHandlers(): PinningHttpHandlers {
@@ -78,9 +99,23 @@ export class DatabaseService {
         pinnedMediaCids: Array.from(this.pinnedImageCids),
         timestamp: new Date().toISOString(),
       }),
-      getDatabases: () => {
-        const databases = Array.from(this.pinnedDatabasesByAddress.values())
-        return { databases, total: databases.length }
+      getDatabases: (opts?: { address?: string }) => {
+        const raw = opts?.address?.trim()
+        if (!raw) {
+          const databases = Array.from(this.pinnedDatabasesByAddress.values())
+          return { databases, total: databases.length }
+        }
+        let addr = raw
+        try {
+          addr = decodeURIComponent(raw)
+        } catch {
+          /* keep raw */
+        }
+        const entry = this.pinnedDatabasesByAddress.get(addr)
+        if (entry) {
+          return { databases: [entry], total: 1 }
+        }
+        return { databases: [], total: 0 }
       },
       syncDatabase: async (dbAddress: string) => {
         try {
@@ -195,7 +230,12 @@ export class DatabaseService {
       extractedMediaCids: string[]
     }> => {
       this.pinningSyncOperations++
-      syncLog('Starting sync for database:', dbAddress)
+      const manifest = await this.loadManifest(dbAddress)
+      let dbName: string | null = typeof manifest?.name === 'string' && manifest.name ? manifest.name : null
+      syncLog(
+        'Starting sync for database:',
+        inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+      )
       const endTimer = this.metrics.startSyncTimer('all_databases')
       let db: any
       let aclDb: any
@@ -205,41 +245,98 @@ export class DatabaseService {
       let extractedMediaCids: string[] = []
 
       try {
-        aclDb = await this.preOpenAccessController(dbAddress)
-        syncLog('Opening database:', dbAddress)
+        aclDb = await this.preOpenAccessController(dbAddress, { manifest })
+        syncLog(
+          'Opening database:',
+          inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+        )
         db = await this.openDatabase(dbAddress)
-        syncLog('Opened database:', dbAddress)
+        if (typeof db?.name === 'string' && db.name) {
+          dbName = db.name
+        }
+        syncLog(
+          'Opened database:',
+          inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+        )
         this.installAccessControllerDebugHooks(db, dbAddress)
 
-        syncLog('Waiting for database update event:', dbAddress)
+        syncLog(
+          'Waiting for database update event:',
+          inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+        )
         const { didReceiveUpdate, updates } = await this.waitForUpdateEvent(db)
         if (!didReceiveUpdate) {
-          syncLog('No update event received within timeout:', dbAddress)
+          syncLog(
+            'No update event received within timeout:',
+            inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+          )
         } else {
-          syncLog('Received update event for database:', dbAddress, 'updates:', updates.length)
+          syncLog(
+            'Received update event for database:',
+            inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false }),
+            'updates:',
+            updates.length
+          )
         }
 
         if (didReceiveUpdate) {
           receivedUpdate = true
           const updateRecords = updates.map((entry) => ({ value: entry?.payload?.value ?? entry?.value ?? entry }))
-          extractedMediaCids = this.extractImageCids(updateRecords)
-          syncLog('Extracted media CIDs from updates:', dbAddress, 'count:', extractedMediaCids.length)
-          this.enqueueImageCidsForPinning(extractedMediaCids)
+          const extractedEntries = this.extractImageCids(updateRecords)
+          extractedMediaCids = extractedEntries.map((e) => e.cid)
+          this.logDiscoveredMediaCids(dbAddress, extractedEntries, 'updates')
+          if (extractedEntries.length === 0 && updateRecords.length > 0) {
+            this.logMediaExtractionMiss(dbAddress, dbName, 'updates', updateRecords)
+          }
+          this.enqueueImageCidsForPinning(extractedEntries, dbAddress)
         } else if (typeof db?.all === 'function') {
           // HTTP sync often runs after the writer already replicated; no new `update` may fire.
-          syncLog('Falling back to db.all() scan for media CIDs:', dbAddress)
+          syncLog(
+            'Falling back to db.all() scan for media CIDs:',
+            inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+          )
           try {
             const all = await db.all()
             const rows = Array.isArray(all) ? all : []
-            extractedMediaCids = this.extractImageCids(rows.map((row: any) => ({ value: row?.value ?? row })))
-            if (extractedMediaCids.length > 0) {
+            const scanRecords = rows.map((row: any) => ({ value: row?.value ?? row }))
+            const scanEntries = this.extractImageCids(scanRecords)
+            extractedMediaCids = scanEntries.map((e) => e.cid)
+            if (rows.length === 0) {
+              syncLog(
+                'db.all() fallback: 0 rows',
+                inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
+              )
+            } else if (extractedMediaCids.length > 0) {
               fallbackScanUsed = true
-              this.enqueueImageCidsForPinning(extractedMediaCids)
-              syncLog('Extracted media CIDs from db.all():', dbAddress, 'count:', extractedMediaCids.length)
+              this.logDiscoveredMediaCids(dbAddress, scanEntries, 'db.all')
+              this.enqueueImageCidsForPinning(scanEntries, dbAddress)
+            } else {
+              this.logMediaExtractionMiss(dbAddress, dbName, 'db.all', scanRecords)
             }
           } catch (scanErr: any) {
-            syncLog('db.all() fallback failed:', dbAddress, scanErr?.message || scanErr)
+            syncLog(
+              'db.all() fallback failed:',
+              inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false }),
+              scanErr?.message || scanErr
+            )
           }
+        }
+
+        if (loggingConfig.enableSyncLogs && db) {
+          const snap = await this.snapshotLocalStateAfterSync(db, { updates, didReceiveUpdate })
+          syncLog(
+            'Sync local state summary: %s',
+            inspect(
+              {
+                dbAddress,
+                dbName,
+                entryCount: snap.entryCount,
+                lastRecord: snap.lastRecord,
+                snapshotSource: snap.source,
+              },
+              { depth: 10, colors: false, compact: false }
+            )
+          )
         }
 
         this.metrics.trackSync('documents', 'success')
@@ -314,10 +411,29 @@ export class DatabaseService {
     })
   }
 
-  private extractImageCidsFromPayload(payload: any): string[] {
-    const result = new Set<string>()
+  private extractImageCidsFromPayload(payload: any, depth = 0): ExtractedMediaCid[] {
+    const maxDepth = 4
+    const byCid = new Map<string, Set<string>>()
+    const add = (raw: unknown, source: string) => {
+      if (typeof raw !== 'string' || raw.length === 0) return
+      if (!byCid.has(raw)) byCid.set(raw, new Set())
+      byCid.get(raw)!.add(source)
+    }
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return []
+    }
 
     const imageCid = payload?.imageCid ?? payload?.imageCID ?? payload?.image?.cid
+    if (typeof imageCid === 'string' && imageCid.length > 0) {
+      const source = payload?.imageCid
+        ? 'imageCid'
+        : payload?.imageCID
+          ? 'imageCID'
+          : 'image.cid'
+      add(imageCid, source)
+    }
+
     const profilePictureCid =
       payload?.profilePicture ??
       payload?.profilePictureCid ??
@@ -325,48 +441,342 @@ export class DatabaseService {
       ((payload?._id === 'profilePicture' || payload?._id === 'profilePictureCid' || payload?._id === 'profilePictureCID')
         ? payload?.value
         : undefined)
-    const mediaIds = Array.isArray(payload?.mediaIds) ? payload.mediaIds : []
-    const mediaId = payload?.mediaId
-
-    for (const candidate of [imageCid, profilePictureCid, mediaId, ...mediaIds]) {
-      if (typeof candidate === 'string' && candidate.length > 0) result.add(candidate)
+    if (typeof profilePictureCid === 'string' && profilePictureCid.length > 0) {
+      const source = payload?.profilePicture
+        ? 'profilePicture'
+        : payload?.profilePictureCid
+          ? 'profilePictureCid'
+          : payload?.profilePictureCID
+            ? 'profilePictureCID'
+            : 'profilePicture(_id/value)'
+      add(profilePictureCid, source)
     }
 
-    return Array.from(result)
+    const mediaId = payload?.mediaId
+    if (typeof mediaId === 'string' && mediaId.length > 0) add(mediaId, 'mediaId')
+
+    const mediaIds = Array.isArray(payload?.mediaIds) ? payload.mediaIds : []
+    for (let i = 0; i < mediaIds.length; i++) {
+      add(mediaIds[i], `mediaIds[${i}]`)
+    }
+
+    const genericCid =
+      payload.cid ??
+      payload.contentCid ??
+      payload.ipfsCid ??
+      payload.mediaCid ??
+      payload.thumbnailCid
+    if (typeof genericCid === 'string' && genericCid.length > 0) {
+      const source = payload.cid
+        ? 'cid'
+        : payload.contentCid
+          ? 'contentCid'
+          : payload.ipfsCid
+            ? 'ipfsCid'
+            : payload.mediaCid
+              ? 'mediaCid'
+              : 'thumbnailCid'
+      add(genericCid, source)
+    }
+
+    const rawValue = payload.value
+    if (depth < maxDepth && typeof rawValue === 'string' && rawValue.length > 0) {
+      try {
+        const parsed = JSON.parse(rawValue) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          for (const { cid, sources } of this.extractImageCidsFromPayload(parsed, depth + 1)) {
+            for (const s of sources) {
+              add(cid, `value(json).${s}`)
+            }
+          }
+        }
+      } catch {
+        // not JSON; ignore
+      }
+    } else if (depth < maxDepth && rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+      for (const { cid, sources } of this.extractImageCidsFromPayload(rawValue, depth + 1)) {
+        for (const s of sources) {
+          add(cid, `value.${s}`)
+        }
+      }
+    }
+
+    return Array.from(byCid.entries()).map(([cid, sources]) => ({
+      cid,
+      sources: [...sources].sort(),
+    }))
   }
 
-  private extractImageCids(records: any[]): string[] {
-    const result = new Set<string>()
+  private extractImageCids(records: any[]): ExtractedMediaCid[] {
+    const byCid = new Map<string, Set<string>>()
 
     for (const record of records) {
       const payload = record?.value ?? record
-      for (const candidate of this.extractImageCidsFromPayload(payload)) result.add(candidate)
+      for (const { cid, sources } of this.extractImageCidsFromPayload(payload)) {
+        if (!byCid.has(cid)) byCid.set(cid, new Set())
+        for (const s of sources) byCid.get(cid)!.add(s)
+      }
     }
 
-    return Array.from(result)
+    return Array.from(byCid.entries()).map(([cid, sources]) => ({
+      cid,
+      sources: [...sources].sort(),
+    }))
   }
 
-  private async pinImageCid(imageCid: string) {
+  private logDiscoveredMediaCids(dbAddress: string, entries: ExtractedMediaCid[], origin: 'updates' | 'db.all') {
+    syncLog(
+      'Discovered media CIDs (%s) db=%s count=%d detail=%o',
+      origin,
+      dbAddress,
+      entries.length,
+      entries.map((e) => ({ cid: e.cid, sources: e.sources }))
+    )
+  }
+
+  private summarizeMediaExtractionDebug(records: any[], maxSamples = 3) {
+    const samples: unknown[] = []
+    const n = Math.min(records.length, maxSamples)
+    for (let i = 0; i < n; i++) {
+      const r = records[i]
+      const payload = r?.value ?? r
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const keys = Object.keys(payload as object).sort()
+        const v = (payload as any).value
+        const hint: Record<string, unknown> = {
+          index: i,
+          topLevelKeys: keys,
+        }
+        if (typeof v === 'string') {
+          hint.valueKind = 'string'
+          hint.valuePreview =
+            v.length > 120 ? `${v.slice(0, 120)}…(${v.length} chars)` : v
+        } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+          hint.valueKind = 'object'
+          hint.valueKeys = Object.keys(v as object).sort()
+        } else if (v !== undefined) {
+          hint.valueKind = typeof v
+        }
+        samples.push(hint)
+      } else {
+        samples.push({
+          index: i,
+          payloadKind: payload === null ? 'null' : typeof payload,
+        })
+      }
+    }
+    return {
+      recordCount: records.length,
+      samples,
+      fieldsWeMatch: [
+        'imageCid',
+        'imageCID',
+        'image.cid',
+        'profilePicture*',
+        'mediaId',
+        'mediaIds[]',
+        'cid',
+        'contentCid',
+        'ipfsCid',
+        'mediaCid',
+        'thumbnailCid',
+        'value (nested object or JSON string with those fields inside)',
+      ],
+    }
+  }
+
+  private logMediaExtractionMiss(
+    dbAddress: string,
+    dbName: string | null,
+    origin: 'updates' | 'db.all',
+    records: any[]
+  ) {
+    if (records.length === 0) return
+    syncLog(
+      'Media CID extraction: no CIDs matched (origin=%s, records=%d). Hint=%s',
+      origin,
+      records.length,
+      inspect(
+        { dbAddress, dbName, ...this.summarizeMediaExtractionDebug(records) },
+        { depth: 8, colors: false, compact: false }
+      )
+    )
+  }
+
+  private previewForSyncLog(value: unknown, maxString = 800): string {
+    try {
+      return inspect(value, {
+        depth: 5,
+        maxArrayLength: 24,
+        maxStringLength: maxString,
+        breakLength: 100,
+        colors: false,
+        compact: false,
+      })
+    } catch {
+      return String(value)
+    }
+  }
+
+  private summarizeLastDbRowForSyncLog(row: any): Record<string, unknown> {
+    if (row == null) return { row: null }
+    if (typeof row !== 'object') return { row: String(row) }
+    const out: Record<string, unknown> = {}
+    if (row.hash != null) out.hash = row.hash
+    if (row.key != null) out.key = row.key
+    if ('value' in row) {
+      out.value = this.previewForSyncLog(row.value)
+    } else {
+      out.entry = this.previewForSyncLog(row)
+    }
+    return out
+  }
+
+  private summarizeLastIteratorEntryForSyncLog(entry: any): Record<string, unknown> {
+    if (entry == null) return { entry: null }
+    if (typeof entry !== 'object') return { entry: String(entry) }
+    const out: Record<string, unknown> = {}
+    for (const k of ['hash', 'key', 'id', 'clock']) {
+      if (entry[k] != null) out[k] = entry[k]
+    }
+    if ('payload' in entry || 'value' in entry) {
+      out.value = this.previewForSyncLog(entry.payload ?? entry.value)
+    } else {
+      out.entry = this.previewForSyncLog(entry)
+    }
+    return out
+  }
+
+  private summarizeLastUpdateEntryForSyncLog(entry: any): Record<string, unknown> {
+    const id = entry?.identity
+    return {
+      hash: entry?.hash ?? null,
+      identity:
+        typeof id === 'string' ? (id.length > 28 ? `${id.slice(0, 28)}…` : id) : id ?? null,
+      payloadPreview: this.previewForSyncLog(entry?.payload ?? entry?.value ?? entry),
+    }
+  }
+
+  private async snapshotLocalStateAfterSync(
+    db: any,
+    ctx: { updates: any[]; didReceiveUpdate: boolean }
+  ): Promise<{
+    entryCount: number | null
+    lastRecord: Record<string, unknown> | null
+    source: string
+  }> {
+    if (typeof db?.all === 'function') {
+      try {
+        const all = await db.all()
+        const rows = Array.isArray(all) ? all : []
+        const last = rows.length > 0 ? rows[rows.length - 1] : null
+        return {
+          entryCount: rows.length,
+          lastRecord: last ? this.summarizeLastDbRowForSyncLog(last) : null,
+          source: 'db.all()',
+        }
+      } catch (e: any) {
+        return {
+          entryCount: null,
+          lastRecord: null,
+          source: `db.all() error: ${e?.message || e}`,
+        }
+      }
+    }
+
+    if (typeof db?.iterator === 'function') {
+      try {
+        let count = 0
+        let last: any = null
+        for await (const entry of db.iterator()) {
+          count++
+          last = entry
+          if (count >= 100_000) break
+        }
+        return {
+          entryCount: count,
+          lastRecord: last ? this.summarizeLastIteratorEntryForSyncLog(last) : null,
+          source: count >= 100_000 ? 'iterator (stopped at 100k)' : 'iterator',
+        }
+      } catch (e: any) {
+        return {
+          entryCount: null,
+          lastRecord: null,
+          source: `iterator error: ${e?.message || e}`,
+        }
+      }
+    }
+
+    if (ctx.didReceiveUpdate && ctx.updates.length > 0) {
+      const last = ctx.updates[ctx.updates.length - 1]
+      return {
+        entryCount: null,
+        lastRecord: this.summarizeLastUpdateEntryForSyncLog(last),
+        source: `update-event burst only (n=${ctx.updates.length})`,
+      }
+    }
+
+    return {
+      entryCount: null,
+      lastRecord: null,
+      source: 'unknown (no db.all / iterator / updates)',
+    }
+  }
+
+  private async pinImageCid(imageCid: string, ctx: { dbAddress: string; sources?: string[] }) {
     const cid = CID.parse(imageCid)
+    let hadLocalBlock: boolean | undefined
+    if (typeof this.ipfs?.blockstore?.has === 'function') {
+      try {
+        hadLocalBlock = await this.ipfs.blockstore.has(cid)
+      } catch {
+        hadLocalBlock = undefined
+      }
+    }
+
+    syncLog(
+      'Media pin start: db=%s cid=%s sources=%o hadLocalBlock=%s note=%s',
+      ctx.dbAddress,
+      imageCid,
+      ctx.sources ?? [],
+      hadLocalBlock === undefined ? 'unknown' : String(hadLocalBlock),
+      hadLocalBlock === true
+        ? 'root block already local; pin may still fetch missing DAG parts'
+        : 'root block not local (or unknown); pin will fetch from network if available'
+    )
+
     for await (const _ of this.ipfs.pins.add(cid)) {
       // consume the async generator to completion
     }
-    syncLog('Pinned image CID:', imageCid)
+
+    syncLog('Media pin ok: db=%s cid=%s', ctx.dbAddress, imageCid)
   }
 
-  private enqueueImageCidsForPinning(imageCids: string[]) {
-    if (!this.ipfs?.pins || imageCids.length === 0 || this.isShuttingDown) return
+  private enqueueImageCidsForPinning(entries: ExtractedMediaCid[], dbAddress: string) {
+    if (!this.ipfs?.pins || entries.length === 0 || this.isShuttingDown) return
 
-    for (const imageCid of imageCids) {
-      if (this.pinnedImageCids.has(imageCid) || this.queuedImageCids.has(imageCid)) continue
+    for (const { cid: imageCid, sources } of entries) {
+      if (this.pinnedImageCids.has(imageCid) || this.queuedImageCids.has(imageCid)) {
+        if (loggingConfig.logLevels.database) {
+          syncLog('Media CID skip (already pinned or queued): db=%s cid=%s', dbAddress, imageCid)
+        }
+        continue
+      }
 
       this.queuedImageCids.add(imageCid)
       this.pinQueue
         .add(async () => {
           try {
-            await this.pinImageCid(imageCid)
+            await this.pinImageCid(imageCid, { dbAddress, sources })
             this.pinnedImageCids.add(imageCid)
           } catch (err: any) {
+            syncLog(
+              'Media pin failed: db=%s cid=%s sources=%o error=%s',
+              dbAddress,
+              imageCid,
+              sources,
+              err?.message || String(err)
+            )
             if (loggingConfig.logLevels.database) {
               // eslint-disable-next-line no-console
               console.error(`Failed to pin image CID ${imageCid}:`, err?.message || err)
@@ -434,25 +844,28 @@ export class DatabaseService {
     }
   }
 
-  private async loadManifest(dbAddress: string): Promise<any | null> {
+  private async loadManifest(dbAddress: string, options?: { quiet?: boolean }): Promise<any | null> {
     try {
       const orbitAddress = parseAddress(dbAddress)
       const cid = CID.parse(orbitAddress.hash, base58btc)
-      syncLog('Loading OrbitDB manifest block:', inspect({
-        dbAddress,
-        manifestCid: cid.toString(),
-      }, { depth: null, colors: false, compact: false }))
       const bytes = await this.ipfs.blockstore.get(cid)
       const { value } = await Block.decode({ bytes, codec: dagCbor, hasher: sha256 })
-      syncLog(
-        'Loaded OrbitDB manifest block:',
-        inspect(this.summarizeManifest(value || null, dbAddress, cid.toString()), {
-          depth: null,
-          colors: false,
-          compact: false,
-        })
-      )
-      return value || null
+      const manifest: any = value ?? null
+      const name = manifest?.name
+      if (typeof name === 'string' && name.length > 0) {
+        this.orbitDbNameByAddress.set(dbAddress, name)
+      }
+      if (!options?.quiet) {
+        syncLog(
+          'OrbitDB manifest:',
+          inspect(this.summarizeManifest(manifest, dbAddress, cid.toString()), {
+            depth: null,
+            colors: false,
+            compact: false,
+          })
+        )
+      }
+      return manifest
     } catch (error: any) {
       if (loggingConfig.logLevels.database) {
         // eslint-disable-next-line no-console
@@ -533,16 +946,23 @@ export class DatabaseService {
     }
   }
 
-  private async preOpenAccessController(dbAddress: string, timeoutMs = 20000): Promise<any | null> {
-    const manifest = await this.loadManifest(dbAddress)
+  private async preOpenAccessController(
+    dbAddress: string,
+    options?: { manifest?: any | null; timeoutMs?: number }
+  ): Promise<any | null> {
+    const timeoutMs = options?.timeoutMs ?? 20000
+    const manifest =
+      options != null && 'manifest' in options ? options.manifest! : await this.loadManifest(dbAddress)
+    const dbName = typeof manifest?.name === 'string' && manifest.name ? manifest.name : null
+    const dbCtx = () => inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
     const accessControllerAddress = this.normalizeOrbitdbAccessAddress(manifest?.accessController || null)
 
     if (!accessControllerAddress) {
-      syncLog('No pre-openable OrbitDB access controller found for database:', dbAddress)
+      syncLog('No pre-openable OrbitDB access controller found for database:', dbCtx())
       return null
     }
 
-    syncLog('Pre-opening access controller before database sync:', dbAddress, 'acl:', accessControllerAddress)
+    syncLog('Pre-opening access controller before database sync:', dbCtx(), 'acl:', accessControllerAddress)
     const aclDb = await this.openDatabase(accessControllerAddress)
     this.installAccessControllerDebugHooks(aclDb, accessControllerAddress)
     syncLog(
@@ -555,12 +975,14 @@ export class DatabaseService {
     if (!didReceiveActivity) {
       syncLog(
         'No access-controller activity received within timeout:',
+        dbCtx(),
         accessControllerAddress,
         inspect(await this.snapshotDatabaseState(aclDb, 'acl-timeout'), { depth: null, colors: false, compact: false })
       )
     } else {
       syncLog(
         'Access-controller activity observed before database sync:',
+        dbCtx(),
         accessControllerAddress,
         'activity:',
         activity,
@@ -570,12 +992,14 @@ export class DatabaseService {
     if (!headStatus.didReceiveHeads) {
       syncLog(
         'No access-controller heads received within timeout:',
+        dbCtx(),
         accessControllerAddress,
         inspect(await this.snapshotDatabaseState(aclDb, 'acl-head-timeout'), { depth: null, colors: false, compact: false })
       )
     } else {
       syncLog(
         'Access-controller heads became visible before database sync:',
+        dbCtx(),
         accessControllerAddress,
         inspect(headStatus, { depth: null, colors: false, compact: false })
       )

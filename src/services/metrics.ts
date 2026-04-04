@@ -34,7 +34,8 @@ export type StreamPinnedCidResult =
 
 export type PinningHttpHandlers = {
   getStats: () => Record<string, unknown>
-  getDatabases: () => { databases: Array<Record<string, unknown>>; total: number }
+  /** When `address` is set, returns at most one entry (relay sync history only). */
+  getDatabases: (opts?: { address?: string }) => { databases: Array<Record<string, unknown>>; total: number }
   syncDatabase: (dbAddress: string) => Promise<PinningSyncResult>
   /**
    * Stream bytes for a CID only if it is pinned in Helia and only from local storage
@@ -197,6 +198,15 @@ export class MetricsServer {
 
     const pathnameOnly = (url: string | undefined) => (url || '/').split('?')[0] || '/'
 
+    const firstSearchParam = (reqUrl: string | undefined, names: string[]): string => {
+      const u = new URL(reqUrl || '/', 'http://metrics.local')
+      for (const name of names) {
+        const v = u.searchParams.get(name)
+        if (v != null && v.trim() !== '') return v.trim()
+      }
+      return ''
+    }
+
     const corsConfig = readCorsOriginConfig()
 
     const createServer = () =>
@@ -220,7 +230,19 @@ export class MetricsServer {
 
         if (pinning && pathname === '/pinning/databases' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify(pinning.getDatabases()))
+          const filterRaw = firstSearchParam(req.url, ['address', 'dbAddress'])
+          const payload = pinning.getDatabases(filterRaw ? { address: filterRaw } : undefined)
+          if (filterRaw && payload.total === 0) {
+            res.statusCode = 404
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: 'Database address not found in relay sync history',
+              })
+            )
+            return
+          }
+          res.end(JSON.stringify(payload))
           return
         }
 
@@ -228,7 +250,9 @@ export class MetricsServer {
           res.setHeader('Content-Type', 'application/json')
           try {
             const body = (await readJsonBody(req)) as { dbAddress?: string }
-            const dbAddress = typeof body?.dbAddress === 'string' ? body.dbAddress.trim() : ''
+            const fromBody = typeof body?.dbAddress === 'string' ? body.dbAddress.trim() : ''
+            const fromQuery = firstSearchParam(req.url, ['dbAddress', 'address'])
+            const dbAddress = fromBody || fromQuery
             if (!dbAddress) {
               res.statusCode = 400
               res.end(JSON.stringify({ ok: false, error: 'Missing or invalid dbAddress' }))

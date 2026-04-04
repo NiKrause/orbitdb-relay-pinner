@@ -12,6 +12,7 @@ See `AGENTS.md` for an architecture and feature guide (entrypoints, data flow, e
 ## Docs
 
 - Relay media pinning flow: `docs/relay-media-pinning.md`
+- HTTP API (`/health`, `/multiaddrs`, `/pinning/*`, `/ipfs/*`, `/metrics`): `docs/http-api.md`
 
 ## CLI
 
