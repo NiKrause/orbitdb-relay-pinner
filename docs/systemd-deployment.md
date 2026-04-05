@@ -79,7 +79,7 @@ sudo tee /opt/orbitdb-relay-pinner/package.json >/dev/null <<'EOF'
   "private": true,
   "type": "module",
   "dependencies": {
-    "orbitdb-relay-pinner": "^0.6.2"
+    "orbitdb-relay-pinner": "^0.6.3"
   }
 }
 EOF
