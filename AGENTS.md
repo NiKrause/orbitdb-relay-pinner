@@ -132,6 +132,7 @@ Human-facing route reference: **`docs/http-api.md`**.
 - HTTP server exposes:
   - `GET /metrics` for Prometheus scraping
   - `GET /health`, `GET /multiaddrs`, pinning JSON routes (`/pinning/*`), and `GET /ipfs/<cid>` (pinned-local bytes only; see `streamPinnedCid` in `DatabaseService`)
+- When `METRICS_HTTPS_ENABLED` is set and AutoTLS has PEM material, the same routes are also served over HTTPS on `METRICS_HTTPS_PORT` (see `docs/http-api.md`).
 - **CORS:** all of the above respond with `Access-Control-Allow-*` so browser `fetch` from another origin works. Default allow-all: `METRICS_CORS_ORIGIN=*` (unset). Use a comma-separated allowlist of exact origins in production. `OPTIONS` preflight returns `204`.
 - Defaults to port `9090`, but handles `EADDRINUSE` by retrying on an ephemeral port if the requested port is not `0`.
 - Uses a singleton instance so creating `MetricsServer` multiple times does not double-register metrics.
@@ -163,6 +164,9 @@ Human-facing route reference: **`docs/http-api.md`**.
 
 - `METRICS_PORT` (default `9090`, `0` for ephemeral)
 - `METRICS_DISABLED=true|1`
+- `METRICS_HTTPS_ENABLED=true|1`: when set, after AutoTLS provisions a cert, also listen for HTTPS on `METRICS_HTTPS_PORT` with the same routes; clients must use a hostname under `*.<base36PeerId>.libp2p.direct` (see `GET /health` / `docs/http-api.md`).
+- `METRICS_HTTPS_PORT` (default `9443`)
+- Nym VPN users: choose ports from [Nym exit policy](https://nymtech.net/.wellknown/network-requester/exit-policy.txt); see **`docs/nym-vpn-ports.md`**
 - `METRICS_CORS_ORIGIN`: `*` (default) or comma-separated allowlist, e.g. `https://app.example.com,http://localhost:5173`
 - `METRICS_CORS_ALLOW_HEADERS` (optional): defaults to `Content-Type, Authorization`
 - `METRICS_CORS_MAX_AGE` (optional): preflight cache seconds, default `86400`

@@ -119,7 +119,7 @@ export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore)
     streamMuxers: [yamux()],
     services: {
       ping: ping(),
-      autonat: autoNAT(),
+      // autonat: autoNAT(),
       dcutr: dcutr(),
       aminoDHT: kadDHT({
         protocol: '/ipfs/kad/1.0.0',
