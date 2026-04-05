@@ -105,6 +105,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
     pinning: databaseService.createPinningHttpHandlers(),
   })
   await metricsServer.start()
+  metricsServer.attachAutoTlsFromLibp2p(libp2p as any)
 
   if (loggingConfig.enableGeneralLogs) {
     log('Relay PeerId: %s', libp2p.peerId.toString())

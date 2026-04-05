@@ -1,10 +1,18 @@
 # HTTP API (metrics server)
 
-The relay exposes a single **plain HTTP** listener (no TLS on this port; use a reverse proxy only if you add one). Default port is **`9090`**; override with **`METRICS_PORT`**. If **`METRICS_DISABLED=true`**, the server is not started.
+The relay exposes a **plain HTTP** listener on **`METRICS_PORT`** (default **`9090`**). If **`METRICS_DISABLED=true`**, it is not started.
 
-**Base URL:** `http://<host>:<METRICS_PORT>`
+Optionally, when **`METRICS_HTTPS_ENABLED=true`** and **AutoTLS** has provisioned a certificate (`@ipshipyard/libp2p-auto-tls`, not disabled via **`disableAutoTLS`**), a second listener serves the **same routes** over **HTTPS** on **`METRICS_HTTPS_PORT`** (default **`9443`**). The certificate is the same PEM pair libp2p uses for **WSS**; the TLS hostname must match the AutoTLS wildcard:
 
-Implementation: `src/services/metrics.ts` (routes) and `DatabaseService.createPinningHttpHandlers()` in `src/services/database.ts` (pinning + `/ipfs`).
+- Serving zone: **`<base36(peerId CID bytes)>.libp2p.direct`**
+- Valid HTTPS hostnames are one label under that zone, e.g. **`metrics.<that-zone>`** (not your vanity VPS hostname).
+
+**Base URL (HTTP):** `http://<host>:<METRICS_PORT>`  
+**Base URL (HTTPS, when enabled and cert is ready):** `https://metrics.<autoTlsServingZone>:<METRICS_HTTPS_PORT>`
+
+`GET /health` and `GET /multiaddrs` include **`autoTlsServingZone`** and a **`metricsHttps`** object (`enabled`, `listening`, `port`, **`exampleUrl`**) so operators can see the expected URL once TLS is up.
+
+Implementation: `src/services/metrics.ts` (routes, HTTPS) and `DatabaseService.createPinningHttpHandlers()` in `src/services/database.ts` (pinning + `/ipfs`).
 
 The default **`relay`** entrypoint registers pinning handlers, so **`/pinning/*`** and **`/ipfs/*`** are available. If you construct **`MetricsServer`** without **`pinning`**, those paths return **`404 Not found`** like any unknown route.
 
@@ -55,11 +63,18 @@ curl -sS "$BASE/health"
   "peerId": "12D3KooW…",
   "connections": { "active": 42 },
   "multiaddrs": 13,
+  "autoTlsServingZone": "…libp2p.direct",
+  "metricsHttps": {
+    "enabled": false,
+    "listening": false,
+    "port": null,
+    "exampleUrl": null
+  },
   "timestamp": "2026-04-03T12:00:00.000Z"
 }
 ```
 
-`multiaddrs` is the **count** of advertised multiaddrs, not the list (use **`GET /multiaddrs`**).
+`multiaddrs` is the **count** of advertised multiaddrs, not the list (use **`GET /multiaddrs`**). When **`METRICS_HTTPS_ENABLED`** is true and a certificate is active, **`metricsHttps.listening`** is true, **`port`** is the bound port, and **`exampleUrl`** is a sample **`https://metrics.<zone>:<port>/health`** URL (use any single-label prefix instead of `metrics` if you prefer).
 
 ---
 
@@ -92,6 +107,13 @@ curl -sS "$BASE/multiaddrs"
     "webrtc": "…",
     "websocket": "…",
     "tcp": "…"
+  },
+  "autoTlsServingZone": "…libp2p.direct",
+  "metricsHttps": {
+    "enabled": false,
+    "listening": false,
+    "port": null,
+    "exampleUrl": null
   },
   "timestamp": "2026-04-03T12:00:00.000Z"
 }
