@@ -14,6 +14,8 @@ Optionally, when **`METRICS_HTTPS_ENABLED=true`** and **AutoTLS** has provisione
 
 Implementation: `src/services/metrics.ts` (routes, HTTPS) and `DatabaseService.createPinningHttpHandlers()` in `src/services/database.ts` (pinning + `/ipfs`).
 
+**Nym VPN:** mixnet exits only allow specific destination ports. If you use [Nym’s exit policy](https://nymtech.net/.wellknown/network-requester/exit-policy.txt), pick **`METRICS_PORT`** / **`METRICS_HTTPS_PORT`** from that list (e.g. **8008**, **8443** or **9443**) and align **`RELAY_*`** / **`VITE_APPEND_ANNOUNCE`** as in **`docs/nym-vpn-ports.md`**.
+
 The default **`relay`** entrypoint registers pinning handlers, so **`/pinning/*`** and **`/ipfs/*`** are available. If you construct **`MetricsServer`** without **`pinning`**, those paths return **`404 Not found`** like any unknown route.
 
 ## CORS

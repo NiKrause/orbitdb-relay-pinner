@@ -166,6 +166,7 @@ Human-facing route reference: **`docs/http-api.md`**.
 - `METRICS_DISABLED=true|1`
 - `METRICS_HTTPS_ENABLED=true|1`: when set, after AutoTLS provisions a cert, also listen for HTTPS on `METRICS_HTTPS_PORT` with the same routes; clients must use a hostname under `*.<base36PeerId>.libp2p.direct` (see `GET /health` / `docs/http-api.md`).
 - `METRICS_HTTPS_PORT` (default `9443`)
+- Nym VPN users: choose ports from [Nym exit policy](https://nymtech.net/.wellknown/network-requester/exit-policy.txt); see **`docs/nym-vpn-ports.md`**
 - `METRICS_CORS_ORIGIN`: `*` (default) or comma-separated allowlist, e.g. `https://app.example.com,http://localhost:5173`
 - `METRICS_CORS_ALLOW_HEADERS` (optional): defaults to `Content-Type, Authorization`
 - `METRICS_CORS_MAX_AGE` (optional): preflight cache seconds, default `86400`
