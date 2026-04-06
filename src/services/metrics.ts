@@ -64,6 +64,16 @@ const syncDurationHistogram = new client.Histogram({
   buckets: [0.1, 0.5, 1, 2, 5, 10],
 })
 
+const relayInboundOrbitdbHeadsRejectCounter = new client.Counter({
+  name: 'relay_inbound_rejected_missing_orbitdb_heads_total',
+  help: 'Inbound connections closed after Identify because the remote advertised no /orbitdb/heads/* protocol',
+})
+
+/** Incremented when `RELAY_REQUIRE_ORBITDB_HEADS_PROTOCOL` closes an inbound peer after Identify. */
+export function incRelayInboundOrbitdbHeadsReject(): void {
+  relayInboundOrbitdbHeadsRejectCounter.inc()
+}
+
 function isPublicAddress(addr: string): boolean {
   if (!addr) return false
   if (addr.includes('/ip4/127.')) return false

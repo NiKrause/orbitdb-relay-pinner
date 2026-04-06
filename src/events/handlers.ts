@@ -1,10 +1,16 @@
-import { identify } from '@libp2p/identify'
 import PQueue from 'p-queue'
 import { WebSocketsSecure } from '@multiformats/multiaddr-matcher'
 import { inspect } from 'node:util'
 
 import { log, syncLog } from '../utils/logger.js'
 import { loggingConfig } from '../config/logging.js'
+import { isRelayRequireOrbitdbHeadsProtocolEnabled } from '../config/orbitdb-inbound-filter-env.js'
+import { incRelayInboundOrbitdbHeadsReject } from '../services/metrics.js'
+
+function remoteHasOrbitdbHeadsProtocol(protocols: unknown): boolean {
+  if (!Array.isArray(protocols)) return false
+  return protocols.some((p) => typeof p === 'string' && p.startsWith('/orbitdb/heads/'))
+}
 
 export function setupEventHandlers(libp2p: any, databaseService: any) {
   const cleanupFunctions: Array<() => void> = []
@@ -13,34 +19,44 @@ export function setupEventHandlers(libp2p: any, databaseService: any) {
 
   const peerConnectHandler = async (event: any) => {
     const peer = event.detail
-    try {
-      if (loggingConfig.logLevels.peer) log('peer:connect', peer)
-      await identify(peer)
-      try {
-        const peerId = peer?.toString?.() || peer?.id?.toString?.() || 'unknown'
-        let peerRecord = null
-        try {
-          peerRecord = await libp2p.peerStore.get(peer?.id || peer)
-        } catch (error: any) {
-          if (error?.code !== 'ERR_NOT_FOUND') throw error
-        }
-        const protocols = peerRecord?.protocols ?? []
-        if (loggingConfig.logLevels.peer) {
-          log('peer:protocols-after-identify', {
-            peerId,
-            protocols: Array.isArray(protocols) ? protocols : Array.from(protocols || []),
-          })
-        }
-      } catch {}
-    } catch (err: any) {
-      if (err?.code !== 'ERR_UNSUPPORTED_PROTOCOL' && loggingConfig.logLevels.peer) {
-        // eslint-disable-next-line no-console
-        console.error('Failed to identify peer:', err)
-      }
-    }
+    if (loggingConfig.logLevels.peer) log('peer:connect', peer)
   }
   libp2p.addEventListener('peer:connect', peerConnectHandler)
   cleanupFunctions.push(() => libp2p.removeEventListener('peer:connect', peerConnectHandler))
+
+  const peerIdentifyHandler = async (event: any) => {
+    if (isShuttingDown) return
+    const detail = event.detail
+    const protocols = detail?.protocols ?? []
+    const peerIdStr = detail?.peerId?.toString?.() ?? 'unknown'
+    const direction = detail?.connection?.direction
+
+    if (loggingConfig.logLevels.peer) {
+      log('peer:protocols-after-identify', {
+        peerId: peerIdStr,
+        direction,
+        protocols: Array.isArray(protocols) ? protocols : Array.from(protocols || []),
+      })
+    }
+
+    if (!isRelayRequireOrbitdbHeadsProtocolEnabled()) return
+
+    const connection = detail?.connection
+    if (connection?.direction !== 'inbound') return
+    if (remoteHasOrbitdbHeadsProtocol(protocols)) return
+
+    try {
+      incRelayInboundOrbitdbHeadsReject()
+      if (loggingConfig.logLevels.peer) {
+        log('peer:identify:rejected-missing-orbitdb-heads %s', peerIdStr)
+      }
+      await connection.close()
+    } catch {
+      // ignore close errors (peer may already be gone)
+    }
+  }
+  libp2p.addEventListener('peer:identify', peerIdentifyHandler)
+  cleanupFunctions.push(() => libp2p.removeEventListener('peer:identify', peerIdentifyHandler))
 
   const certificateHandler = () => {
     const interval = setInterval(() => {
