@@ -30,7 +30,7 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0(@le-space/orbitdb-identity-provider-webauthn-did@0.2.13(@orbitdb/core@3.0.2)(rollup@4.60.1)(vite@7.3.1(@types/node@22.19.17)(terser@5.46.1)(yaml@2.8.3)))(@orbitdb/core@3.0.2)
       '@le-space/orbitdb-identity-provider-webauthn-did':
-        specifier: ^0.2.10
+        specifier: ^0.2.13
         version: 0.2.13(@orbitdb/core@3.0.2)(rollup@4.60.1)(vite@7.3.1(@types/node@22.19.17)(terser@5.46.1)(yaml@2.8.3))
       '@libp2p/autonat':
         specifier: ^2.0.38

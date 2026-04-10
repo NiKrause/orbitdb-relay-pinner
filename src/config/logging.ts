@@ -8,5 +8,6 @@ export const loggingConfig = {
     peer: process.env.LOG_LEVEL_PEER === 'true',
     database: process.env.LOG_LEVEL_DATABASE === 'true',
     sync: process.env.LOG_LEVEL_SYNC === 'true',
+    blockFetch: process.env.LOG_LEVEL_BLOCK_FETCH === 'true',
   },
 }

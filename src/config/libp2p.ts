@@ -48,6 +48,8 @@ function readRelayListenEnv() {
     process.env.RELAY_DISABLE_WEBRTC === 'true' || process.env.RELAY_DISABLE_WEBRTC === '1'
   const disableBootstrap =
     process.env.RELAY_DISABLE_BOOTSTRAP === 'true' || process.env.RELAY_DISABLE_BOOTSTRAP === '1'
+  const disableAutoNAT =
+    process.env.RELAY_DISABLE_AUTONAT === 'true' || process.env.RELAY_DISABLE_AUTONAT === '1'
 
   const pubsubTopics = (
     process.env.PUBSUB_TOPICS ||
@@ -68,6 +70,7 @@ function readRelayListenEnv() {
     disableIpv6,
     disableWebRtc,
     disableBootstrap,
+    disableAutoNAT,
     pubsubTopics,
   }
 }
@@ -119,7 +122,9 @@ export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore)
     streamMuxers: [yamux()],
     services: {
       ping: ping(),
-      // autonat: autoNAT(),
+      ...(!e.disableAutoNAT && {
+        autonat: autoNAT(),
+      }),
       dcutr: dcutr(),
       aminoDHT: kadDHT({
         protocol: '/ipfs/kad/1.0.0',
