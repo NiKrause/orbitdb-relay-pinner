@@ -13,6 +13,7 @@ See `AGENTS.md` for an architecture and feature guide (entrypoints, data flow, e
 
 - Relay media pinning flow: `docs/relay-media-pinning.md`
 - HTTP API (`/health`, `/multiaddrs`, `/pinning/*`, `/ipfs/*`, `/metrics`): `docs/http-api.md`
+- Libp2p service integration guide: `docs/libp2p-service.md`
 
 ## CLI
 
@@ -33,6 +34,50 @@ Test mode (deterministic peer id via `TEST_PRIVATE_KEY` or `RELAY_PRIV_KEY`):
 ```bash
 orbitdb-relay-pinner --test
 ```
+
+## Library
+
+The package still exports `startRelay()` as the compatibility wrapper used by the CLI and the existing tests.
+
+For a fuller install + integration walkthrough, see `docs/libp2p-service.md`.
+
+It also exports `orbitdbReplicationService()` so the OrbitDB replication + Helia pinning logic can be mounted directly in any libp2p node:
+
+```ts
+import { createLibp2p } from 'libp2p'
+import { LevelDatastore } from 'datastore-level'
+import { LevelBlockstore } from 'blockstore-level'
+import { gossipsub } from '@chainsafe/libp2p-gossipsub'
+import { identify } from '@libp2p/identify'
+import { orbitdbReplicationService } from 'orbitdb-relay-pinner'
+
+const datastore = new LevelDatastore('./tmp/ipfs/data')
+const blockstore = new LevelBlockstore('./tmp/ipfs/blocks')
+
+await datastore.open()
+await blockstore.open()
+
+const libp2p = await createLibp2p({
+  datastore,
+  services: {
+    identify: identify(),
+    pubsub: gossipsub(),
+    orbitdbReplication: orbitdbReplicationService({
+      datastore,
+      blockstore,
+      orbitdbDirectory: './tmp/orbitdb'
+    })
+  }
+})
+
+await libp2p.services.orbitdbReplication.syncAllOrbitDBRecords('/orbitdb/...')
+```
+
+Notes:
+
+- `orbitdbReplicationService()` expects caller-owned `datastore` and `blockstore`.
+- Stopping the libp2p node stops the replication service, OrbitDB, and its Helia instance.
+- The caller still closes `datastore` and `blockstore` after `libp2p.stop()`.
 
 ## Supported Access Controllers
 

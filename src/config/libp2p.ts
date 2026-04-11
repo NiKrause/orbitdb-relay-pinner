@@ -75,7 +75,13 @@ function readRelayListenEnv() {
   }
 }
 
-export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore) => {
+type ExtraServiceFactories = Record<string, (components: any) => unknown>
+
+export const createLibp2pConfig = (
+  privateKey: PrivateKey,
+  datastore: Datastore,
+  extraServices: ExtraServiceFactories = {},
+) => {
   const e = readRelayListenEnv()
 
   return {
@@ -151,6 +157,7 @@ export const createLibp2pConfig = (privateKey: PrivateKey, datastore: Datastore)
         }),
       }),
       keychain: keychain(),
+      ...extraServices,
     },
     connectionGater: {
       denyDialMultiaddr: async () => false,

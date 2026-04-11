@@ -117,14 +117,17 @@ export const stopClient = async (client) => {
   } catch {}
 }
 
-/**
- * Full flow: Alice writes → relay /pinning/sync + stats → Alice offline → Bob opens DB + reads block.
- * Cleans up Alice/Bob clients before returning.
- *
- * @param {{ tempRoot: string, relayAddr: import('multiformats/multiaddr').Multiaddr, metricsPort: number, dbBaseName: string }} opts
- */
-export async function runRelayMediaReplicationScenario(opts) {
-  const { tempRoot, relayAddr, metricsPort, dbBaseName } = opts
+async function runRelayMediaReplicationScenarioCore(opts) {
+  const {
+    tempRoot,
+    relayAddr,
+    dbBaseName,
+    syncDatabase,
+    getStats,
+    getDatabases,
+    getRelayPeerId,
+  } = opts
+
   const safeName = dbBaseName.replace(/[^a-zA-Z0-9-_]/g, '-')
 
   let alice = await createClient(join(tempRoot, `alice-${safeName}`))
@@ -157,19 +160,8 @@ export async function runRelayMediaReplicationScenario(opts) {
   const expectedCidStr = imageBlocks[0].cid.toString()
 
   const syncJson = await waitFor(async () => {
-    const syncRes = await fetch(`http://127.0.0.1:${metricsPort}/pinning/sync`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dbAddress: aliceDbAddress }),
-    })
-    const syncText = await syncRes.text()
-    let parsed
-    try {
-      parsed = JSON.parse(syncText)
-    } catch {
-      return null
-    }
-    if (!syncRes.ok || !parsed.ok) {
+    const parsed = await syncDatabase(aliceDbAddress)
+    if (!parsed?.ok) {
       return null
     }
     if (!Array.isArray(parsed.extractedMediaCids) || !parsed.extractedMediaCids.includes(expectedCidStr)) {
@@ -188,20 +180,19 @@ export async function runRelayMediaReplicationScenario(opts) {
   )
 
   await waitFor(async () => {
-    const stats = await fetchJson(`http://127.0.0.1:${metricsPort}/pinning/stats`)
+    const stats = await getStats()
     const pinned = stats.pinnedMediaCids
     return Array.isArray(pinned) && pinned.includes(expectedCidStr) ? stats : null
   })
 
-  const dbList = await fetchJson(`http://127.0.0.1:${metricsPort}/pinning/databases`)
+  const dbList = await getDatabases()
   assert.ok(
     dbList.databases?.some((d) => d.address === aliceDbAddress),
     `Relay should list the DB after sync: ${aliceDbAddress}`,
   )
 
-  const relayHealth = await fetchJson(`http://127.0.0.1:${metricsPort}/health`)
-  const relayPeerIdStr = relayHealth.peerId
-  assert.ok(typeof relayPeerIdStr === 'string' && relayPeerIdStr.length > 0, 'health should return relay peerId')
+  const relayPeerIdStr = await getRelayPeerId()
+  assert.ok(typeof relayPeerIdStr === 'string' && relayPeerIdStr.length > 0, 'relay should expose peerId')
 
   await stopClient(alice)
   alice = null
@@ -235,4 +226,58 @@ export async function runRelayMediaReplicationScenario(opts) {
   }
 
   await stopClient(bob)
+}
+
+/**
+ * Full flow: Alice writes → relay /pinning/sync + stats → Alice offline → Bob opens DB + reads block.
+ * Cleans up Alice/Bob clients before returning.
+ *
+ * @param {{ tempRoot: string, relayAddr: import('multiformats/multiaddr').Multiaddr, metricsPort: number, dbBaseName: string }} opts
+ */
+export async function runRelayMediaReplicationScenario(opts) {
+  const { tempRoot, relayAddr, metricsPort, dbBaseName } = opts
+  await runRelayMediaReplicationScenarioCore({
+    tempRoot,
+    relayAddr,
+    dbBaseName,
+    syncDatabase: async (dbAddress) => {
+      const syncRes = await fetch(`http://127.0.0.1:${metricsPort}/pinning/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dbAddress }),
+      })
+      const syncText = await syncRes.text()
+      let parsed
+      try {
+        parsed = JSON.parse(syncText)
+      } catch {
+        return null
+      }
+      if (!syncRes.ok) {
+        return null
+      }
+      return parsed
+    },
+    getStats: async () => await fetchJson(`http://127.0.0.1:${metricsPort}/pinning/stats`),
+    getDatabases: async () => await fetchJson(`http://127.0.0.1:${metricsPort}/pinning/databases`),
+    getRelayPeerId: async () => {
+      const relayHealth = await fetchJson(`http://127.0.0.1:${metricsPort}/health`)
+      return relayHealth.peerId
+    },
+  })
+}
+
+export async function runOrbitdbReplicationServiceScenario(opts) {
+  const { tempRoot, relayAddr, relayService, relayPeerId, dbBaseName } = opts
+  const pinning = relayService.createPinningHttpHandlers()
+
+  await runRelayMediaReplicationScenarioCore({
+    tempRoot,
+    relayAddr,
+    dbBaseName,
+    syncDatabase: async (dbAddress) => await pinning.syncDatabase(dbAddress),
+    getStats: async () => pinning.getStats(),
+    getDatabases: async () => pinning.getDatabases(),
+    getRelayPeerId: async () => relayPeerId,
+  })
 }

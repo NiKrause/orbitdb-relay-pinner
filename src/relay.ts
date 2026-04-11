@@ -1,13 +1,12 @@
 import { createLibp2p } from 'libp2p'
-import { createHelia } from 'helia'
 import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
 import { privateKeyFromProtobuf } from '@libp2p/crypto/keys'
 import { join } from 'node:path'
 
 import { createLibp2pConfig } from './config/libp2p.js'
 import { initializeStorage } from './services/storage.js'
-import { DatabaseService } from './services/database.js'
 import { MetricsServer } from './services/metrics.js'
+import { orbitdbReplicationService, type OrbitdbReplicationServiceApi } from './services/orbitdb-replication-service.js'
 import { setupEventHandlers } from './events/handlers.js'
 import { loggingConfig } from './config/logging.js'
 import { headsStreamLog, log } from './utils/logger.js'
@@ -91,18 +90,22 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
     }
   }
 
-  const libp2p = await createLibp2p(createLibp2pConfig(privateKey, datastore))
+  const libp2p = await createLibp2p(
+    createLibp2pConfig(privateKey, datastore, {
+      orbitdbReplication: orbitdbReplicationService({
+        datastore,
+        blockstore,
+        orbitdbDirectory: join(storageDir, 'orbitdb'),
+      }),
+    }),
+  )
   attachOrbitdbHeadsStreamLogging(libp2p as any)
-  const ipfs = await createHelia({ libp2p, datastore, blockstore })
-
-  const databaseService = new DatabaseService()
-  await databaseService.initialize(ipfs as any, join(storageDir, 'orbitdb'))
-
-  const cleanupEventHandlers = await setupEventHandlers(libp2p as any, databaseService as any)
+  const orbitdbReplication = (libp2p as any).services.orbitdbReplication as OrbitdbReplicationServiceApi
+  const cleanupEventHandlers = await setupEventHandlers(libp2p as any)
 
   const metricsServer = new MetricsServer({
     getLibp2p: () => libp2p as any,
-    pinning: databaseService.createPinningHttpHandlers(),
+    pinning: orbitdbReplication.createPinningHttpHandlers(),
   })
   await metricsServer.start()
   metricsServer.attachAutoTlsFromLibp2p(libp2p as any)
@@ -114,14 +117,8 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
 
   return {
     stop: async () => {
-      databaseService.beginShutdown()
       try {
         await cleanupEventHandlers?.()
-      } catch {
-        // ignore
-      }
-      try {
-        await databaseService.stop()
       } catch {
         // ignore
       }
@@ -131,14 +128,7 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
         // ignore
       }
       try {
-        // best effort; helia/libp2p will close underlying stores as well
-        // @ts-expect-error helia internal store wrappers
-        await ipfs.blockstore?.child?.child?.child?.close?.()
-      } catch {
-        // ignore
-      }
-      try {
-        await ipfs.stop()
+        await libp2p.stop()
       } catch {
         // ignore
       }
@@ -149,11 +139,6 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
       }
       try {
         await blockstore.close()
-      } catch {
-        // ignore
-      }
-      try {
-        await libp2p.stop()
       } catch {
         // ignore
       }
