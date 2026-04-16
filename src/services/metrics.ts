@@ -358,197 +358,205 @@ export class MetricsServer {
     const corsConfig = readCorsOriginConfig()
 
     return async (req: http.IncomingMessage, res: http.ServerResponse) => {
-      const pathname = pathnameOnly(req.url)
-      const pinning = this.options.pinning
+      try {
+        const pathname = pathnameOnly(req.url)
+        const pinning = this.options.pinning
 
-      applyCorsHeaders(req, res, corsConfig)
+        applyCorsHeaders(req, res, corsConfig)
 
-      if (req.method === 'OPTIONS') {
-        res.statusCode = 204
-        res.end()
-        return
-      }
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
 
-      if (pinning && pathname === '/pinning/stats' && req.method === 'GET') {
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify(pinning.getStats()))
-        return
-      }
+        if (pinning && pathname === '/pinning/stats' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(pinning.getStats()))
+          return
+        }
 
-      if (pinning && pathname === '/pinning/databases' && req.method === 'GET') {
-        res.setHeader('Content-Type', 'application/json')
-        const filterRaw = firstSearchParam(req.url, ['address', 'dbAddress'])
-        const payload = pinning.getDatabases(filterRaw ? { address: filterRaw } : undefined)
-        if (filterRaw && payload.total === 0) {
-          res.statusCode = 404
+        if (pinning && pathname === '/pinning/databases' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json')
+          const filterRaw = firstSearchParam(req.url, ['address', 'dbAddress'])
+          const payload = pinning.getDatabases(filterRaw ? { address: filterRaw } : undefined)
+          if (filterRaw && payload.total === 0) {
+            res.statusCode = 404
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: 'Database address not found in relay sync history',
+              })
+            )
+            return
+          }
+          res.end(JSON.stringify(payload))
+          return
+        }
+
+        if (pinning && pathname === '/pinning/sync' && req.method === 'POST') {
+          res.setHeader('Content-Type', 'application/json')
+          try {
+            const body = (await readJsonBody(req)) as { dbAddress?: string }
+            const fromBody = typeof body?.dbAddress === 'string' ? body.dbAddress.trim() : ''
+            const fromQuery = firstSearchParam(req.url, ['dbAddress', 'address'])
+            const dbAddress = fromBody || fromQuery
+            if (!dbAddress) {
+              res.statusCode = 400
+              res.end(JSON.stringify({ ok: false, error: 'Missing or invalid dbAddress' }))
+              return
+            }
+            const result = await pinning.syncDatabase(dbAddress)
+            res.statusCode = result.ok ? 200 : 500
+            if (result.ok) {
+              res.end(
+                JSON.stringify({
+                  ok: true,
+                  dbAddress,
+                  receivedUpdate: result.receivedUpdate,
+                  fallbackScanUsed: result.fallbackScanUsed,
+                  extractedMediaCids: result.extractedMediaCids,
+                  ...(result.coalesced ? { coalesced: true } : {}),
+                })
+              )
+            } else {
+              res.end(JSON.stringify({ ok: false, error: result.error || 'sync failed' }))
+            }
+          } catch (e: any) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ ok: false, error: e?.message || String(e) }))
+          }
+          return
+        }
+
+        if (pinning?.streamPinnedCid && req.method === 'GET' && pathname.startsWith('/ipfs/')) {
+          const tail = pathname.slice('/ipfs/'.length)
+          let parts: string[]
+          try {
+            parts = tail.split('/').filter((p) => p.length > 0).map((p) => decodeURIComponent(p))
+          } catch {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Invalid path encoding' }))
+            return
+          }
+          if (parts.length === 0) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Missing CID' }))
+            return
+          }
+          const cidStr = parts[0]
+          const pathWithin = parts.length > 1 ? parts.slice(1).join('/') : undefined
+
+          const out = await pinning.streamPinnedCid(cidStr, pathWithin)
+          if (!out.ok) {
+            res.statusCode = out.status
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: out.error }))
+            return
+          }
+          res.statusCode = 200
+          if (out.contentType) {
+            res.setHeader('Content-Type', out.contentType)
+          }
+          res.setHeader('Cache-Control', 'private, no-store')
+          try {
+            for await (const chunk of out.chunks) {
+              if (!res.write(chunk)) {
+                await new Promise<void>((resolve) => res.once('drain', resolve))
+              }
+            }
+            res.end()
+          } catch (e: any) {
+            if (!res.writableEnded) {
+              try {
+                res.destroy(e)
+              } catch {
+                // ignore
+              }
+            }
+          }
+          return
+        }
+
+        if (pathname === '/metrics') {
+          res.setHeader('Content-Type', client.register.contentType)
+          res.end(await this.getMetrics())
+          return
+        }
+
+        if (pathname === '/health') {
+          const libp2p = this.getLibp2p()
+          const connections = libp2p?.getConnections?.() || []
+          const multiaddrs = (libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString())
+          const tlsListening = Boolean(this.tlsServer?.listening)
+          const tlsAddress = this.tlsServer?.address()
+          const tlsPort =
+            tlsListening && tlsAddress && typeof tlsAddress === 'object' && 'port' in tlsAddress
+              ? (tlsAddress as { port: number }).port
+              : null
+          const zone = autoTlsServingZoneFromPeerId(libp2p?.peerId)
+
+          res.setHeader('Content-Type', 'application/json')
           res.end(
             JSON.stringify({
-              ok: false,
-              error: 'Database address not found in relay sync history',
+              status: 'ok',
+              peerId: libp2p?.peerId?.toString?.() || null,
+              connections: { active: connections.length },
+              multiaddrs: multiaddrs.length,
+              autoTlsServingZone: zone,
+              metricsHttps: metricsHttpsPayload(tlsListening, tlsPort, zone),
+              timestamp: new Date().toISOString(),
             })
           )
           return
         }
-        res.end(JSON.stringify(payload))
-        return
-      }
 
-      if (pinning && pathname === '/pinning/sync' && req.method === 'POST') {
-        res.setHeader('Content-Type', 'application/json')
-        try {
-          const body = (await readJsonBody(req)) as { dbAddress?: string }
-          const fromBody = typeof body?.dbAddress === 'string' ? body.dbAddress.trim() : ''
-          const fromQuery = firstSearchParam(req.url, ['dbAddress', 'address'])
-          const dbAddress = fromBody || fromQuery
-          if (!dbAddress) {
-            res.statusCode = 400
-            res.end(JSON.stringify({ ok: false, error: 'Missing or invalid dbAddress' }))
-            return
+        if (pathname === '/multiaddrs') {
+          const libp2p = this.getLibp2p()
+          const all = prioritizeAddresses((libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString()))
+          const byTransport = {
+            webrtc: all.filter((ma) => ma.includes('/webrtc')),
+            tcp: all.filter((ma) => ma.includes('/tcp/') && !ma.includes('/ws')),
+            websocket: all.filter((ma) => ma.includes('/ws')),
           }
-          const result = await pinning.syncDatabase(dbAddress)
-          res.statusCode = result.ok ? 200 : 500
-          if (result.ok) {
-            res.end(
-              JSON.stringify({
-                ok: true,
-                dbAddress,
-                receivedUpdate: result.receivedUpdate,
-                fallbackScanUsed: result.fallbackScanUsed,
-                extractedMediaCids: result.extractedMediaCids,
-                ...(result.coalesced ? { coalesced: true } : {}),
-              })
-            )
-          } else {
-            res.end(JSON.stringify({ ok: false, error: result.error || 'sync failed' }))
-          }
-        } catch (e: any) {
-          res.statusCode = 400
-          res.end(JSON.stringify({ ok: false, error: e?.message || String(e) }))
-        }
-        return
-      }
+          const tlsListening = Boolean(this.tlsServer?.listening)
+          const tlsAddress = this.tlsServer?.address()
+          const tlsPort =
+            tlsListening && tlsAddress && typeof tlsAddress === 'object' && 'port' in tlsAddress
+              ? (tlsAddress as { port: number }).port
+              : null
+          const zone = autoTlsServingZoneFromPeerId(libp2p?.peerId)
 
-      if (pinning?.streamPinnedCid && req.method === 'GET' && pathname.startsWith('/ipfs/')) {
-        const tail = pathname.slice('/ipfs/'.length)
-        let parts: string[]
-        try {
-          parts = tail.split('/').filter((p) => p.length > 0).map((p) => decodeURIComponent(p))
-        } catch {
-          res.statusCode = 400
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: 'Invalid path encoding' }))
+          res.end(
+            JSON.stringify({
+              peerId: libp2p?.peerId?.toString?.() || null,
+              all,
+              byTransport,
+              best: {
+                webrtc: byTransport.webrtc[0] || null,
+                websocket: byTransport.websocket[0] || null,
+                tcp: byTransport.tcp[0] || null,
+              },
+              autoTlsServingZone: zone,
+              metricsHttps: metricsHttpsPayload(tlsListening, tlsPort, zone),
+              timestamp: new Date().toISOString(),
+            })
+          )
           return
         }
-        if (parts.length === 0) {
-          res.statusCode = 400
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: 'Missing CID' }))
-          return
-        }
-        const cidStr = parts[0]
-        const pathWithin = parts.length > 1 ? parts.slice(1).join('/') : undefined
 
-        const out = await pinning.streamPinnedCid(cidStr, pathWithin)
-        if (!out.ok) {
-          res.statusCode = out.status
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: out.error }))
-          return
-        }
-        res.statusCode = 200
-        if (out.contentType) {
-          res.setHeader('Content-Type', out.contentType)
-        }
-        res.setHeader('Cache-Control', 'private, no-store')
-        try {
-          for await (const chunk of out.chunks) {
-            if (!res.write(chunk)) {
-              await new Promise<void>((resolve) => res.once('drain', resolve))
-            }
-          }
-          res.end()
-        } catch (e: any) {
-          if (!res.writableEnded) {
-            try {
-              res.destroy(e)
-            } catch {
-              // ignore
-            }
-          }
-        }
-        return
-      }
-
-      if (pathname === '/metrics') {
-        res.setHeader('Content-Type', client.register.contentType)
-        res.end(await this.getMetrics())
-        return
-      }
-
-      if (pathname === '/health') {
-        const libp2p = this.getLibp2p()
-        const connections = libp2p?.getConnections?.() || []
-        const multiaddrs = (libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString())
-        const tlsListening = Boolean(this.tlsServer?.listening)
-        const tlsAddress = this.tlsServer?.address()
-        const tlsPort =
-          tlsListening && tlsAddress && typeof tlsAddress === 'object' && 'port' in tlsAddress
-            ? (tlsAddress as { port: number }).port
-            : null
-        const zone = autoTlsServingZoneFromPeerId(libp2p?.peerId)
-
+        res.statusCode = 404
+        res.end('Not found')
+      } catch (error: any) {
+        log('Metrics request failed: %s', error?.stack || error?.message || String(error))
+        if (res.writableEnded || res.destroyed) return
+        res.statusCode = 500
         res.setHeader('Content-Type', 'application/json')
-        res.end(
-          JSON.stringify({
-            status: 'ok',
-            peerId: libp2p?.peerId?.toString?.() || null,
-            connections: { active: connections.length },
-            multiaddrs: multiaddrs.length,
-            autoTlsServingZone: zone,
-            metricsHttps: metricsHttpsPayload(tlsListening, tlsPort, zone),
-            timestamp: new Date().toISOString(),
-          })
-        )
-        return
+        res.end(JSON.stringify({ error: 'Internal server error' }))
       }
-
-      if (pathname === '/multiaddrs') {
-        const libp2p = this.getLibp2p()
-        const all = prioritizeAddresses((libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString()))
-        const byTransport = {
-          webrtc: all.filter((ma) => ma.includes('/webrtc')),
-          tcp: all.filter((ma) => ma.includes('/tcp/') && !ma.includes('/ws')),
-          websocket: all.filter((ma) => ma.includes('/ws')),
-        }
-        const tlsListening = Boolean(this.tlsServer?.listening)
-        const tlsAddress = this.tlsServer?.address()
-        const tlsPort =
-          tlsListening && tlsAddress && typeof tlsAddress === 'object' && 'port' in tlsAddress
-            ? (tlsAddress as { port: number }).port
-            : null
-        const zone = autoTlsServingZoneFromPeerId(libp2p?.peerId)
-
-        res.setHeader('Content-Type', 'application/json')
-        res.end(
-          JSON.stringify({
-            peerId: libp2p?.peerId?.toString?.() || null,
-            all,
-            byTransport,
-            best: {
-              webrtc: byTransport.webrtc[0] || null,
-              websocket: byTransport.websocket[0] || null,
-              tcp: byTransport.tcp[0] || null,
-            },
-            autoTlsServingZone: zone,
-            metricsHttps: metricsHttpsPayload(tlsListening, tlsPort, zone),
-            timestamp: new Date().toISOString(),
-          })
-        )
-        return
-      }
-
-      res.statusCode = 404
-      res.end('Not found')
     }
   }
 

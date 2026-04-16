@@ -32,6 +32,7 @@ const DelegatedTodoAccessController = (opts: { write?: string[] } = {}) =>
 
 const DEFERRED_ACL_PREFIX = '/orbitdb-deferred/'
 const ORBITDB_PREFIX = '/orbitdb/'
+const RELAY_ERROR_HANDLER_INSTALLED = Symbol('relayErrorHandlerInstalled')
 
 /** Deduped media CID plus which payload fields referenced it (for sync/pin logs). */
 export type ExtractedMediaCid = { cid: string; sources: string[] }
@@ -1018,9 +1019,37 @@ export class DatabaseService {
     const openPromise = this.orbitdb.open(dbAddress)
     this.openInFlight.set(dbAddress, openPromise)
     try {
-      return await openPromise
+      const db = await openPromise
+      this.installNonFatalDatabaseErrorHandlers(db, dbAddress)
+      return db
     } finally {
       this.openInFlight.delete(dbAddress)
+    }
+  }
+
+  private installNonFatalDatabaseErrorHandlers(db: any, dbAddress: string) {
+    const attach = (emitter: any, source: string) => {
+      if (!emitter?.on) return
+      if (emitter[RELAY_ERROR_HANDLER_INSTALLED]) return
+
+      emitter.on('error', (error: any) => {
+        const payload = {
+          dbAddress,
+          dbName: db?.name || null,
+          source,
+          error: error?.message || String(error),
+          stack: error?.stack || null,
+        }
+        // eslint-disable-next-line no-console
+        console.error('OrbitDB emitted a non-fatal error:', inspect(payload, { depth: null, colors: false, compact: false }))
+      })
+
+      emitter[RELAY_ERROR_HANDLER_INSTALLED] = true
+    }
+
+    attach(db?.events, 'db.events')
+    if (db?.sync?.events && db.sync.events !== db.events) {
+      attach(db.sync.events, 'db.sync.events')
     }
   }
 
