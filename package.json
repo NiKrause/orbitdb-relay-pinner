@@ -21,6 +21,7 @@
     "pinning"
   ],
   "license": "MIT",
+  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22"
   },
@@ -44,9 +45,9 @@
   "scripts": {
     "start": "DEBUG=le-space:relay:* node dist/cli.js",
     "build": "tsc -p tsconfig.json && node scripts/add-shebang.mjs",
-    "test": "npm run build && mocha --timeout 180000 \"mocha/**/*.mjs\"",
-    "test:integration:relay-media": "npm run build && mocha --timeout 180000 \"mocha/relay-media-replication.mjs\"",
-    "prepack": "npm run build"
+    "test": "pnpm run build && mocha --timeout 180000 \"mocha/**/*.mjs\"",
+    "test:integration:relay-media": "pnpm run build && mocha --timeout 180000 \"mocha/relay-media-replication.mjs\"",
+    "prepack": "pnpm run build"
   },
   "overrides": {
     "it-length-prefixed": "9.1.1"
