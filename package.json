@@ -87,6 +87,7 @@
     "datastore-level": "^11.0.4",
     "dotenv": "^16.5.0",
     "helia": "^5.3.0",
+    "interface-blockstore": "^5.3.2",
     "interface-datastore": "^8.3.1",
     "key-did-resolver": "^4.0.0",
     "libp2p": "^2.10.0",
