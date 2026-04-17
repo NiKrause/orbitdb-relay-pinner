@@ -80,6 +80,9 @@ importers:
       '@libp2p/websockets':
         specifier: ^9.2.19
         version: 9.2.19
+      '@multiformats/multiaddr':
+        specifier: ^12.5.1
+        version: 12.5.1
       '@multiformats/multiaddr-matcher':
         specifier: ^1.7.0
         version: 1.8.0

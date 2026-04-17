@@ -80,6 +80,7 @@
     "@libp2p/tcp": "^10.1.10",
     "@libp2p/webrtc": "^5.2.23",
     "@libp2p/websockets": "^9.2.19",
+    "@multiformats/multiaddr": "^12.5.1",
     "@multiformats/multiaddr-matcher": "^1.7.0",
     "@orbitdb/core": "^3.0.2",
     "@orbitdb/identity-provider-did": "^1.0.2",
