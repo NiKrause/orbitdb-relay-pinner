@@ -1,4 +1,5 @@
 import { noise } from '@chainsafe/libp2p-noise'
+import { quic } from '@chainsafe/libp2p-quic'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { circuitRelayTransport, circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import { identify, identifyPush } from '@libp2p/identify'
@@ -41,11 +42,13 @@ function readRelayListenEnv() {
   const tcpPort = Number(process.env.RELAY_TCP_PORT || 9091)
   const wsPort = Number(process.env.RELAY_WS_PORT || 9092)
   const webrtcPort = Number(process.env.RELAY_WEBRTC_PORT || 9093)
+  const quicPort = Number(process.env.RELAY_QUIC_PORT || 9094)
   const listenIpv4 = process.env.RELAY_LISTEN_IPV4 || '0.0.0.0'
   const listenIpv6 = process.env.RELAY_LISTEN_IPV6 || '::'
   const disableIpv6 = process.env.RELAY_DISABLE_IPV6 === 'true' || process.env.RELAY_DISABLE_IPV6 === '1'
   const disableWebRtc =
     process.env.RELAY_DISABLE_WEBRTC === 'true' || process.env.RELAY_DISABLE_WEBRTC === '1'
+  const disableQuic = process.env.RELAY_DISABLE_QUIC === 'true' || process.env.RELAY_DISABLE_QUIC === '1'
   const disableBootstrap =
     process.env.RELAY_DISABLE_BOOTSTRAP === 'true' || process.env.RELAY_DISABLE_BOOTSTRAP === '1'
   const disableAutoNAT =
@@ -65,10 +68,12 @@ function readRelayListenEnv() {
     tcpPort,
     wsPort,
     webrtcPort,
+    quicPort,
     listenIpv4,
     listenIpv6,
     disableIpv6,
     disableWebRtc,
+    disableQuic,
     disableBootstrap,
     disableAutoNAT,
     pubsubTopics,
@@ -92,11 +97,13 @@ export const createLibp2pConfig = (
       listen: [
         `/ip4/${e.listenIpv4}/tcp/${e.tcpPort}`,
         `/ip4/${e.listenIpv4}/tcp/${e.wsPort}/ws`,
+        ...(!e.disableQuic ? [`/ip4/${e.listenIpv4}/udp/${e.quicPort}/quic-v1`] : []),
         ...(!e.disableWebRtc ? [`/ip4/${e.listenIpv4}/udp/${e.webrtcPort}/webrtc-direct`] : []),
         ...(!e.disableIpv6
           ? [
               `/ip6/${e.listenIpv6}/tcp/${e.tcpPort}`,
               `/ip6/${e.listenIpv6}/tcp/${e.wsPort}/ws`,
+              ...(!e.disableQuic ? [`/ip6/${e.listenIpv6}/udp/${e.quicPort}/quic-v1`] : []),
               ...(!e.disableWebRtc ? [`/ip6/${e.listenIpv6}/udp/${e.webrtcPort}/webrtc-direct`] : []),
             ]
           : []),
@@ -106,6 +113,7 @@ export const createLibp2pConfig = (
     transports: [
       circuitRelayTransport(),
       tcp(),
+      ...(!e.disableQuic ? [quic()] : []),
       ...(!e.disableWebRtc ? [webRTC(), webRTCDirect()] : []),
       webSockets(),
     ],

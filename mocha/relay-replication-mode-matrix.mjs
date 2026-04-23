@@ -49,7 +49,9 @@ describe('relay replication (simple-todo mode matrix labels, Node stack)', funct
     for (const key of [
       'RELAY_TCP_PORT',
       'RELAY_WS_PORT',
+      'RELAY_QUIC_PORT',
       'RELAY_WEBRTC_PORT',
+      'RELAY_DISABLE_QUIC',
       'RELAY_DISABLE_WEBRTC',
       'RELAY_DISABLE_IPV6',
       'RELAY_DISABLE_BOOTSTRAP',
@@ -64,7 +66,9 @@ describe('relay replication (simple-todo mode matrix labels, Node stack)', funct
 
     process.env.RELAY_TCP_PORT = String(tcpPort)
     process.env.RELAY_WS_PORT = String(wsPort)
+    process.env.RELAY_QUIC_PORT = '0'
     process.env.RELAY_WEBRTC_PORT = '0'
+    process.env.RELAY_DISABLE_QUIC = '1'
     process.env.RELAY_DISABLE_WEBRTC = '1'
     process.env.RELAY_DISABLE_IPV6 = '1'
     process.env.RELAY_DISABLE_BOOTSTRAP = '1'

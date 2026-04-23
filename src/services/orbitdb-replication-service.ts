@@ -24,6 +24,11 @@ export interface OrbitdbReplicationServiceApi {
   beforeStop?(): Promise<void>
 }
 
+type StreamHandlerRecordLike = {
+  handler: (context: any) => Promise<void>
+  options?: Record<string, unknown>
+}
+
 type Libp2pFacade = {
   peerId: unknown
   peerStore: unknown
@@ -186,6 +191,51 @@ function setupOrbitdbReplicationHandlers(libp2p: Libp2pFacade, databaseService: 
   }
 }
 
+function installOnDemandOrbitdbHeadsSupport(registrar: any, databaseService: DatabaseService): () => void {
+  const originalGetProtocols = registrar.getProtocols?.bind(registrar)
+  const originalGetHandler = registrar.getHandler?.bind(registrar)
+
+  if (typeof originalGetProtocols !== 'function' || typeof originalGetHandler !== 'function') {
+    return () => {}
+  }
+
+  registrar.getProtocols = () => {
+    return Array.from(new Set<string>([
+      ...originalGetProtocols(),
+      ...databaseService.getKnownHeadsProtocols(),
+    ])).sort()
+  }
+
+  registrar.getHandler = (protocol: string): StreamHandlerRecordLike => {
+    try {
+      return originalGetHandler(protocol)
+    } catch (error: any) {
+      if (!databaseService.isKnownHeadsProtocol(protocol)) {
+        throw error
+      }
+
+      syncLog(
+        'Providing on-demand handler for known OrbitDB heads protocol:',
+        inspect({ protocol }, { depth: null, colors: false, compact: false }),
+      )
+
+      return {
+        options: {
+          runOnLimitedConnection: true,
+        },
+        handler: async (context: any) => {
+          await databaseService.handleOnDemandHeadsProtocol(protocol, context, originalGetHandler)
+        },
+      }
+    }
+  }
+
+  return () => {
+    registrar.getProtocols = originalGetProtocols
+    registrar.getHandler = originalGetHandler
+  }
+}
+
 class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
   readonly [serviceDependencies]: string[] = ['@libp2p/pubsub']
   readonly [Symbol.toStringTag] = '@le-space/orbitdb-replication-service'
@@ -196,6 +246,7 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
   private ipfs: any | null
   private databaseService: DatabaseService | null
   private cleanupSyncHandlers: (() => Promise<void>) | null
+  private cleanupRegistrarHooks: (() => void) | null
   private started: boolean
 
   constructor(components: any, init: OrbitdbReplicationServiceInit) {
@@ -205,6 +256,7 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
     this.ipfs = null
     this.databaseService = null
     this.cleanupSyncHandlers = null
+    this.cleanupRegistrarHooks = null
     this.started = false
   }
 
@@ -223,14 +275,22 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
 
     try {
       await databaseService.initialize(ipfs as any, this.init.orbitdbDirectory)
+      const cleanupRegistrarHooks = installOnDemandOrbitdbHeadsSupport(this.components.registrar, databaseService)
       const cleanupSyncHandlers = setupOrbitdbReplicationHandlers(libp2p, databaseService)
 
       this.libp2p = libp2p
       this.ipfs = ipfs
       this.databaseService = databaseService
       this.cleanupSyncHandlers = cleanupSyncHandlers
+      this.cleanupRegistrarHooks = cleanupRegistrarHooks
       this.started = true
     } catch (error) {
+      try {
+        this.cleanupRegistrarHooks?.()
+      } catch {
+        // ignore cleanup failures
+      }
+      this.cleanupRegistrarHooks = null
       databaseService.beginShutdown()
       try {
         await databaseService.stop()
@@ -250,11 +310,13 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
     if (!this.started && this.databaseService == null && this.ipfs == null) return
 
     const cleanupSyncHandlers = this.cleanupSyncHandlers
+    const cleanupRegistrarHooks = this.cleanupRegistrarHooks
     const databaseService = this.databaseService
     const ipfs = this.ipfs
 
     this.started = false
     this.cleanupSyncHandlers = null
+    this.cleanupRegistrarHooks = null
     this.databaseService = null
     this.ipfs = null
     this.libp2p = null
@@ -263,6 +325,12 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
 
     try {
       await cleanupSyncHandlers?.()
+    } catch {
+      // ignore cleanup failures
+    }
+
+    try {
+      cleanupRegistrarHooks?.()
     } catch {
       // ignore cleanup failures
     }

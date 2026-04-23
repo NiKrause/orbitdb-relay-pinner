@@ -1,5 +1,16 @@
 # Changes
 
+## v0.8.0
+
+- Switched repository and GitHub Actions installs from `npm` to `pnpm`, including lockfile-based CI setup and pinned package-manager metadata.
+- Added the missing direct dependencies `interface-blockstore` and `@multiformats/multiaddr`, which `pnpm` correctly requires because the code and integration tests import them directly.
+- Fixed the `dev` branch CI path end to end so both the build workflow and the relay media integration workflow pass with the strict pnpm dependency graph.
+- Verified with `pnpm run build`, `pnpm run test:integration:relay-media`, and green GitHub Actions runs on `dev`.
+
+### Release note
+
+This is a minor release focused on package-management correctness and release reliability. The project now uses `pnpm` consistently in local development and GitHub Actions, and the direct runtime and test dependencies needed by the codebase are declared explicitly so clean installs work reliably in CI and fresh environments.
+
 ## v0.7.1
 
 - Added non-fatal OrbitDB database error handlers so emitted `error` events are logged with database context instead of surfacing as unhandled runtime failures during sync.
