@@ -32,6 +32,8 @@ const DelegatedTodoAccessController = (opts: { write?: string[] } = {}) =>
 
 const DEFERRED_ACL_PREFIX = '/orbitdb-deferred/'
 const ORBITDB_PREFIX = '/orbitdb/'
+const ORBITDB_HEADS_PREFIX = '/orbitdb/heads'
+const ON_DEMAND_HEADS_HANDLER_TIMEOUT_MS = 5000
 const RELAY_ERROR_HANDLER_INSTALLED = Symbol('relayErrorHandlerInstalled')
 
 /** Deduped media CID plus which payload fields referenced it (for sync/pin logs). */
@@ -45,6 +47,7 @@ export class DatabaseService {
   eventHandlers: Map<string, any>
   syncInFlight: Map<string, Promise<void>>
   openInFlight: Map<string, Promise<any>>
+  databaseUseCounts: Map<string, number>
   pinQueue: PQueue
   queuedImageCids: Set<string>
   pinnedImageCids: Set<string>
@@ -55,6 +58,7 @@ export class DatabaseService {
   pinningSyncOperations: number
   pinningFailedSyncs: number
   pinnedDatabasesByAddress: Map<string, { address: string; lastSyncedAt: string }>
+  knownDatabasesByAddress: Set<string>
   /** Manifest `name` by OrbitDB address (for logs / pubsub). */
   orbitDbNameByAddress: Map<string, string>
 
@@ -66,6 +70,7 @@ export class DatabaseService {
     this.eventHandlers = new Map()
     this.syncInFlight = new Map()
     this.openInFlight = new Map()
+    this.databaseUseCounts = new Map()
     this.pinQueue = new PQueue({ concurrency: 4 })
     this.queuedImageCids = new Set()
     this.pinnedImageCids = new Set()
@@ -73,6 +78,7 @@ export class DatabaseService {
     this.pinningSyncOperations = 0
     this.pinningFailedSyncs = 0
     this.pinnedDatabasesByAddress = new Map()
+    this.knownDatabasesByAddress = new Set()
     this.orbitDbNameByAddress = new Map()
   }
 
@@ -88,6 +94,36 @@ export class DatabaseService {
       await this.loadManifest(dbAddress, { quiet: true })
     } catch {
       // ignore
+    }
+  }
+
+  getKnownHeadsProtocols(): string[] {
+    return Array.from(this.knownDatabasesByAddress).map((dbAddress) => `${ORBITDB_HEADS_PREFIX}${dbAddress}`)
+  }
+
+  isKnownHeadsProtocol(protocol: string): boolean {
+    const dbAddress = this.dbAddressFromHeadsProtocol(protocol)
+    return dbAddress != null && this.knownDatabasesByAddress.has(dbAddress)
+  }
+
+  async handleOnDemandHeadsProtocol(
+    protocol: string,
+    context: { connection?: { remotePeer?: unknown } },
+    getRegisteredHandler: (protocol: string) => any,
+  ): Promise<void> {
+    const dbAddress = this.dbAddressFromHeadsProtocol(protocol)
+    if (dbAddress == null || !this.knownDatabasesByAddress.has(dbAddress)) {
+      throw new Error(`No replicated database known for protocol ${protocol}`)
+    }
+
+    await this.ensurePeerConnection(context?.connection?.remotePeer)
+
+    const db = await this.retainOpenDatabase(dbAddress)
+    try {
+      const handlerRecord = await this.waitForRegisteredHeadsHandler(protocol, getRegisteredHandler)
+      await handlerRecord.handler(context)
+    } finally {
+      await this.releaseOpenDatabase(dbAddress, db)
     }
   }
 
@@ -231,6 +267,7 @@ export class DatabaseService {
       extractedMediaCids: string[]
     }> => {
       this.pinningSyncOperations++
+      this.rememberKnownDatabaseAddress(dbAddress)
       const manifest = await this.loadManifest(dbAddress)
       let dbName: string | null = typeof manifest?.name === 'string' && manifest.name ? manifest.name : null
       syncLog(
@@ -245,13 +282,16 @@ export class DatabaseService {
       let fallbackScanUsed = false
       let extractedMediaCids: string[] = []
 
+      const aclDbAddress = this.normalizeOrbitdbAccessAddress(manifest?.accessController || null)
+      this.rememberKnownDatabaseAddress(aclDbAddress)
+
       try {
         aclDb = await this.preOpenAccessController(dbAddress, { manifest })
         syncLog(
           'Opening database:',
           inspect({ dbAddress, dbName }, { depth: null, colors: false, compact: false })
         )
-        db = await this.openDatabase(dbAddress)
+        db = await this.retainOpenDatabase(dbAddress)
         if (typeof db?.name === 'string' && db.name) {
           dbName = db.name
         }
@@ -283,6 +323,7 @@ export class DatabaseService {
         if (didReceiveUpdate) {
           receivedUpdate = true
           const updateRecords = updates.map((entry) => ({ value: entry?.payload?.value ?? entry?.value ?? entry }))
+          this.rememberKnownDatabaseAddressesFromRecords(updateRecords)
           const extractedEntries = this.extractImageCids(updateRecords)
           extractedMediaCids = extractedEntries.map((e) => e.cid)
           this.logDiscoveredMediaCids(dbAddress, extractedEntries, 'updates')
@@ -300,6 +341,7 @@ export class DatabaseService {
             const all = await db.all()
             const rows = Array.isArray(all) ? all : []
             const scanRecords = rows.map((row: any) => ({ value: row?.value ?? row }))
+            this.rememberKnownDatabaseAddressesFromRecords(scanRecords)
             const scanEntries = this.extractImageCids(scanRecords)
             extractedMediaCids = scanEntries.map((e) => e.cid)
             if (rows.length === 0) {
@@ -356,17 +398,11 @@ export class DatabaseService {
           console.error('Failed to sync database:', err)
         }
       } finally {
-        try {
-          await db?.close?.()
-        } catch {
-          // ignore close failures
+        if (db) {
+          await this.releaseOpenDatabase(dbAddress, db)
         }
-        try {
-          if (aclDb && aclDb !== db) {
-            await aclDb.close?.()
-          }
-        } catch {
-          // ignore close failures
+        if (aclDb && aclDb !== db && aclDbAddress) {
+          await this.releaseOpenDatabase(aclDbAddress, aclDb)
         }
       }
 
@@ -834,6 +870,92 @@ export class DatabaseService {
     return address.startsWith(ORBITDB_PREFIX) ? address : null
   }
 
+  private rememberKnownDatabaseAddress(dbAddress: string | null | undefined): void {
+    if (typeof dbAddress !== 'string' || !dbAddress.startsWith(ORBITDB_PREFIX)) {
+      return
+    }
+
+    this.knownDatabasesByAddress.add(dbAddress)
+  }
+
+  private rememberKnownDatabaseAddressesFromRecords(records: any[]): void {
+    const visit = (value: unknown, depth = 0) => {
+      if (depth > 4 || value == null) return
+
+      if (typeof value === 'string') {
+        this.rememberKnownDatabaseAddress(value)
+        return
+      }
+
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item, depth + 1)
+        return
+      }
+
+      if (typeof value === 'object') {
+        for (const nested of Object.values(value as Record<string, unknown>)) {
+          visit(nested, depth + 1)
+        }
+      }
+    }
+
+    for (const record of records) {
+      visit(record?.value ?? record)
+    }
+  }
+
+  private dbAddressFromHeadsProtocol(protocol: string): string | null {
+    if (typeof protocol !== 'string' || !protocol.startsWith(`${ORBITDB_HEADS_PREFIX}/`)) return null
+    const dbAddress = protocol.slice(ORBITDB_HEADS_PREFIX.length)
+    return dbAddress.startsWith(ORBITDB_PREFIX) ? dbAddress : null
+  }
+
+  private async waitForRegisteredHeadsHandler(
+    protocol: string,
+    getRegisteredHandler: (protocol: string) => any,
+    timeoutMs = ON_DEMAND_HEADS_HANDLER_TIMEOUT_MS,
+  ): Promise<any> {
+    const startedAt = Date.now()
+    let lastError: any = null
+
+    while (!this.isShuttingDown && Date.now() - startedAt < timeoutMs) {
+      try {
+        return getRegisteredHandler(protocol)
+      } catch (error: any) {
+        lastError = error
+        await delay(50)
+      }
+    }
+
+    throw lastError ?? new Error(`Timed out waiting for handler ${protocol}`)
+  }
+
+  private async ensurePeerConnection(remotePeer: unknown): Promise<void> {
+    if (remotePeer == null) return
+
+    const libp2p = (this.ipfs as any)?.libp2p
+    if (!libp2p || typeof libp2p.getConnections !== 'function' || typeof libp2p.dial !== 'function') {
+      return
+    }
+
+    try {
+      const existingConnections = libp2p.getConnections(remotePeer)
+      if (Array.isArray(existingConnections) && existingConnections.some((connection: any) => connection?.status !== 'closed')) {
+        return
+      }
+    } catch {
+      // fall through and try a best-effort dial
+    }
+
+    const peerId = (remotePeer as any)?.toString?.() || String(remotePeer)
+    try {
+      await libp2p.dial(remotePeer)
+      syncLog('Dialed peer back before on-demand heads open:', peerId)
+    } catch (error: any) {
+      syncLog('Failed to dial peer back before on-demand heads open:', peerId, error?.message || String(error))
+    }
+  }
+
   private summarizeManifest(manifest: any, dbAddress: string, cid: string) {
     return {
       dbAddress,
@@ -964,7 +1086,7 @@ export class DatabaseService {
     }
 
     syncLog('Pre-opening access controller before database sync:', dbCtx(), 'acl:', accessControllerAddress)
-    const aclDb = await this.openDatabase(accessControllerAddress)
+    const aclDb = await this.retainOpenDatabase(accessControllerAddress)
     this.installAccessControllerDebugHooks(aclDb, accessControllerAddress)
     syncLog(
       'Access-controller state after open:',
@@ -1024,6 +1146,31 @@ export class DatabaseService {
       return db
     } finally {
       this.openInFlight.delete(dbAddress)
+    }
+  }
+
+  private async retainOpenDatabase(dbAddress: string): Promise<any> {
+    const db = await this.openDatabase(dbAddress)
+    this.databaseUseCounts.set(dbAddress, (this.databaseUseCounts.get(dbAddress) ?? 0) + 1)
+    return db
+  }
+
+  private async releaseOpenDatabase(dbAddress: string, db: any): Promise<void> {
+    const current = this.databaseUseCounts.get(dbAddress) ?? 0
+    if (current <= 1) {
+      this.databaseUseCounts.delete(dbAddress)
+      await this.closeDatabaseSilently(db)
+      return
+    }
+
+    this.databaseUseCounts.set(dbAddress, current - 1)
+  }
+
+  private async closeDatabaseSilently(db: any): Promise<void> {
+    try {
+      await db?.close?.()
+    } catch {
+      // ignore close failures
     }
   }
 
