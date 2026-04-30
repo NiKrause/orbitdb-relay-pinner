@@ -29,6 +29,15 @@ Run:
 orbitdb-relay-pinner
 ```
 
+Optional connectivity debug protocols for test tooling are disabled by default in the CLI/runtime. Enable them with env vars before startup:
+
+```bash
+RELAY_CONNECTIVITY_ECHO_ENABLED=1 orbitdb-relay-pinner
+RELAY_CONNECTIVITY_BULK_ENABLED=1 orbitdb-relay-pinner
+```
+
+Bulk tuning is also available through `RELAY_CONNECTIVITY_BULK_MAX_FRAME_BYTES`, `RELAY_CONNECTIVITY_BULK_READ_TIMEOUT_MS`, and `RELAY_CONNECTIVITY_BULK_IDLE_TIMEOUT_MS`.
+
 Default listener ports:
 
 - TCP: `9091` via `RELAY_TCP_PORT`

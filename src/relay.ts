@@ -27,6 +27,77 @@ export type RelayRuntime = {
   stop: () => Promise<void>
 }
 
+function readBooleanEnvVar(name: string): boolean | undefined {
+  const raw = process.env[name]?.trim().toLowerCase()
+  if (raw == null || raw === '') return undefined
+  if (raw === '1' || raw === 'true') return true
+  if (raw === '0' || raw === 'false') return false
+  return undefined
+}
+
+function readNumberEnvVar(name: string): number | undefined {
+  const raw = process.env[name]?.trim()
+  if (raw == null || raw === '') return undefined
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function readDebugProtocolsFromEnv(): ConnectivityDebugProtocolsServiceInit | undefined {
+  const echoEnabled = readBooleanEnvVar('RELAY_CONNECTIVITY_ECHO_ENABLED')
+  const bulkEnabled = readBooleanEnvVar('RELAY_CONNECTIVITY_BULK_ENABLED')
+  const maxFrameBytes = readNumberEnvVar('RELAY_CONNECTIVITY_BULK_MAX_FRAME_BYTES')
+  const readTimeoutMs = readNumberEnvVar('RELAY_CONNECTIVITY_BULK_READ_TIMEOUT_MS')
+  const idleTimeoutMs = readNumberEnvVar('RELAY_CONNECTIVITY_BULK_IDLE_TIMEOUT_MS')
+
+  const echo =
+    echoEnabled === undefined
+      ? undefined
+      : {
+          enabled: echoEnabled,
+        }
+
+  const bulk =
+    bulkEnabled === undefined &&
+    maxFrameBytes === undefined &&
+    readTimeoutMs === undefined &&
+    idleTimeoutMs === undefined
+      ? undefined
+      : {
+          enabled: bulkEnabled,
+          maxFrameBytes,
+          readTimeoutMs,
+          idleTimeoutMs,
+        }
+
+  if (echo == null && bulk == null) return undefined
+  return { ...(echo ? { echo } : {}), ...(bulk ? { bulk } : {}) }
+}
+
+function mergeDebugProtocolOptions(
+  envOptions: ConnectivityDebugProtocolsServiceInit | undefined,
+  runtimeOptions: ConnectivityDebugProtocolsServiceInit | undefined,
+): ConnectivityDebugProtocolsServiceInit | undefined {
+  const merged: ConnectivityDebugProtocolsServiceInit = {
+    echo:
+      envOptions?.echo || runtimeOptions?.echo
+        ? {
+            ...(envOptions?.echo ?? {}),
+            ...(runtimeOptions?.echo ?? {}),
+          }
+        : undefined,
+    bulk:
+      envOptions?.bulk || runtimeOptions?.bulk
+        ? {
+            ...(envOptions?.bulk ?? {}),
+            ...(runtimeOptions?.bulk ?? {}),
+          }
+        : undefined,
+  }
+
+  if (merged.echo == null && merged.bulk == null) return undefined
+  return merged
+}
+
 function attachOrbitdbHeadsStreamLogging(libp2p: any) {
   if (!libp2p || libp2p.__orbitdbHeadsLoggingAttached) return
 
@@ -83,6 +154,7 @@ function attachOrbitdbHeadsStreamLogging(libp2p: any) {
 
 export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime> {
   const isTestMode = Boolean(opts.testMode)
+  const debugProtocols = mergeDebugProtocolOptions(readDebugProtocolsFromEnv(), opts.debugProtocols)
   const storageDir =
     opts.storageDir || process.env.DATASTORE_PATH || process.env.RELAY_DATASTORE_PATH || './orbitdb/pinning-service'
 
@@ -104,9 +176,9 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
         blockstore,
         orbitdbDirectory: join(storageDir, 'orbitdb'),
       }),
-      ...(opts.debugProtocols != null
+      ...(debugProtocols != null
         ? {
-            connectivityDebugProtocols: connectivityDebugProtocolsService(opts.debugProtocols),
+            connectivityDebugProtocols: connectivityDebugProtocolsService(debugProtocols),
           }
         : {}),
     }),

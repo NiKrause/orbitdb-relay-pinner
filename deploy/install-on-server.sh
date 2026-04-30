@@ -39,7 +39,7 @@ tee "${INSTALL_ROOT}/package.json" >/dev/null <<'EOF'
   "private": true,
   "type": "module",
   "dependencies": {
-    "orbitdb-relay-pinner": "^0.6.3"
+    "orbitdb-relay-pinner": "^0.9.1"
   }
 }
 EOF

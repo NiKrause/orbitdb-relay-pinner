@@ -11,6 +11,11 @@ It also exports:
 - `createPinningHttpRequestHandler()` for embedding `/health`, `/multiaddrs`, `/pinning/*`, and `/ipfs/*`
 - `PinningHttpServer` as a small HTTP(S) wrapper around that request handler
 
+In the default `startRelay()` runtime, those debug protocols stay disabled unless you either:
+
+- pass `debugProtocols` programmatically, or
+- set `RELAY_CONNECTIVITY_ECHO_ENABLED=1` and/or `RELAY_CONNECTIVITY_BULK_ENABLED=1`
+
 ## Install
 
 Published package:

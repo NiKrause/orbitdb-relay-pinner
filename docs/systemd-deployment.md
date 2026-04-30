@@ -79,7 +79,7 @@ sudo tee /opt/orbitdb-relay-pinner/package.json >/dev/null <<'EOF'
   "private": true,
   "type": "module",
   "dependencies": {
-    "orbitdb-relay-pinner": "^0.6.3"
+    "orbitdb-relay-pinner": "^0.9.1"
   }
 }
 EOF
@@ -102,12 +102,28 @@ Edit `/etc/default/orbitdb-relay-pinner`:
 1. **`DATASTORE_PATH=/var/lib/orbitdb-relay-pinner`**
 2. **`VITE_APPEND_ANNOUNCE`** — set to your **public IPv4** and ports **28191–28193**. Example for **`relay2.seidenwege.com`** (or **`relay.seidenwege.com`**) at `203.0.113.7`:
 
-   ```bash
-   VITE_APPEND_ANNOUNCE=/ip4/203.0.113.7/tcp/28191,/ip4/203.0.113.7/tcp/28192/ws,/ip4/203.0.113.7/udp/28193/webrtc-direct
-   ```
+  ```bash
+  VITE_APPEND_ANNOUNCE=/ip4/203.0.113.7/tcp/28191,/ip4/203.0.113.7/tcp/28192/ws,/ip4/203.0.113.7/udp/28193/webrtc-direct
+  ```
 
 3. Do **not** set `disableAutoTLS` for production WSS via AutoTLS.
 4. Optional: `STAGING=true` while testing Let’s Encrypt **staging** (then remove for production).
+5. Optional: enable the test/debug libp2p protocols only when you actively need them:
+
+   ```bash
+   RELAY_CONNECTIVITY_ECHO_ENABLED=1
+   RELAY_CONNECTIVITY_BULK_ENABLED=1
+   ```
+
+   Optional bulk tuning:
+
+   ```bash
+   RELAY_CONNECTIVITY_BULK_MAX_FRAME_BYTES=262144
+   RELAY_CONNECTIVITY_BULK_READ_TIMEOUT_MS=10000
+   RELAY_CONNECTIVITY_BULK_IDLE_TIMEOUT_MS=30000
+   ```
+
+   Leave them unset for normal production operation; they are disabled by default.
 
 ### 4. systemd unit
 
