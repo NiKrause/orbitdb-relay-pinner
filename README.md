@@ -20,7 +20,7 @@ See `AGENTS.md` for an architecture and feature guide (entrypoints, data flow, e
 Install:
 
 ```bash
-npm i orbitdb-relay-pinner
+npm i -g orbitdb-relay-pinner
 ```
 
 Run:
@@ -28,6 +28,37 @@ Run:
 ```bash
 orbitdb-relay-pinner
 ```
+
+Default listener ports:
+
+- TCP: `9091` via `RELAY_TCP_PORT`
+- WebSocket: `9092` via `RELAY_WS_PORT`
+- WebRTC-direct: `9093` via `RELAY_WEBRTC_PORT`
+- QUIC: `9094` via `RELAY_QUIC_PORT`
+- Metrics HTTP: `9090` via `METRICS_PORT`
+- Metrics HTTPS: `9443` via `METRICS_HTTPS_PORT` when `METRICS_HTTPS_ENABLED=1`
+
+AutoTLS notes:
+
+- AutoTLS is enabled by default. It is only disabled if `disableAutoTLS` is set in the environment.
+- The default startup logs do not print much AutoTLS-specific output, so it is normal not to see certificate activity unless you enable the relevant debug namespaces.
+- When AutoTLS has provisioned a certificate for the WebSocket listener, the relay should advertise secure WebSocket multiaddrs ending in `/tls/ws`.
+- If you use `VITE_APPEND_ANNOUNCE`, keep the public WebSocket address as plain `/ws` with your real public IP and port. Do not manually change it to `/tls/ws`; AutoTLS/domain mapping adds the secure advertised addresses at runtime.
+- To verify WSS is live, check `GET /multiaddrs` and look for entries containing `/tls/ws`.
+
+Show AutoTLS logs:
+
+```bash
+DEBUG='libp2p:auto-tls,libp2p:auto-tls:*,libp2p:websockets:listener' ENABLE_GENERAL_LOGS=1 orbitdb-relay-pinner
+```
+
+If you also want the relay to expose the metrics routes over HTTPS once AutoTLS has provisioned a certificate:
+
+```bash
+METRICS_HTTPS_ENABLED=1 DEBUG='libp2p:auto-tls,libp2p:auto-tls:*,libp2p:websockets:listener' ENABLE_GENERAL_LOGS=1 orbitdb-relay-pinner
+```
+
+With those flags enabled, you should see AutoTLS messages such as certificate fetch attempts, reasons it is not fetching yet, and WebSocket HTTPS listener updates.
 
 Test mode (deterministic peer id via `TEST_PRIVATE_KEY` or `RELAY_PRIV_KEY`):
 
@@ -41,7 +72,13 @@ The package still exports `startRelay()` as the compatibility wrapper used by th
 
 For a fuller install + integration walkthrough, see `docs/libp2p-service.md`.
 
-It also exports `orbitdbReplicationService()` so the OrbitDB replication + Helia pinning logic can be mounted directly in any libp2p node:
+It also exports reusable building blocks for embedded consumers:
+
+- `orbitdbReplicationService()`
+- `connectivityDebugProtocolsService()` for opt-in test/debug echo + bulk protocols
+- `createPinningHttpRequestHandler()` and `PinningHttpServer` for `/health`, `/multiaddrs`, `/pinning/*`, and `/ipfs/*`
+
+`orbitdbReplicationService()` mounts the OrbitDB replication + Helia pinning logic directly in any libp2p node:
 
 ```ts
 import { createLibp2p } from 'libp2p'

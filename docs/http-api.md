@@ -5,18 +5,18 @@ The relay exposes a **plain HTTP** listener on **`METRICS_PORT`** (default **`90
 Optionally, when **`METRICS_HTTPS_ENABLED=true`** and **AutoTLS** has provisioned a certificate (`@ipshipyard/libp2p-auto-tls`, not disabled via **`disableAutoTLS`**), a second listener serves the **same routes** over **HTTPS** on **`METRICS_HTTPS_PORT`** (default **`9443`**). The certificate is the same PEM pair libp2p uses for **WSS**; the TLS hostname must match the AutoTLS wildcard:
 
 - Serving zone: **`<base36(peerId CID bytes)>.libp2p.direct`**
-- Valid HTTPS hostnames are one label under that zone, e.g. **`metrics.<that-zone>`** (not your vanity VPS hostname).
+- Valid HTTPS hostnames are one label under that zone, e.g. an IP-derived host like **`198-51-100-10.<that-zone>`** (not your vanity VPS hostname).
 
 **Base URL (HTTP):** `http://<host>:<METRICS_PORT>`  
-**Base URL (HTTPS, when enabled and cert is ready):** `https://metrics.<autoTlsServingZone>:<METRICS_HTTPS_PORT>`
+**Base URL (HTTPS, when enabled and cert is ready):** `https://<METRICS_HTTPS_PUBLIC_HOST or fallback host>:<EXTERNAL_METRICS_HTTPS_PORT or METRICS_HTTPS_PORT>`
 
-`GET /health` and `GET /multiaddrs` include **`autoTlsServingZone`** and a **`metricsHttps`** object (`enabled`, `listening`, `port`, **`exampleUrl`**) so operators can see the expected URL once TLS is up.
+`GET /health` and `GET /multiaddrs` include **`autoTlsServingZone`** and a **`metricsHttps`** object (`enabled`, `listening`, `port`, `internalPort`, `externalPort`, `host`, `exampleUrl`, `internalExampleUrl`) so operators can see the expected URL once TLS is up.
 
-Implementation: `src/services/metrics.ts` (routes, HTTPS) and `DatabaseService.createPinningHttpHandlers()` in `src/services/database.ts` (pinning + `/ipfs`).
+Implementation: `src/http/pinning-http.ts` (shared handler/server), `src/services/metrics.ts` (metrics + TLS integration), and `DatabaseService.createPinningHttpHandlers()` in `src/services/database.ts` (pinning handler methods).
 
 **Nym VPN:** mixnet exits only allow specific destination ports. If you use [Nym’s exit policy](https://nymtech.net/.wellknown/network-requester/exit-policy.txt), pick **`METRICS_PORT`** / **`METRICS_HTTPS_PORT`** from that list (e.g. **8008**, **8443** or **9443**) and align **`RELAY_*`** / **`VITE_APPEND_ANNOUNCE`** as in **`docs/nym-vpn-ports.md`**.
 
-The default **`relay`** entrypoint registers pinning handlers, so **`/pinning/*`** and **`/ipfs/*`** are available. If you construct **`MetricsServer`** without **`pinning`**, those paths return **`404 Not found`** like any unknown route.
+The default **`relay`** entrypoint registers pinning handlers, so **`/pinning/*`** and **`/ipfs/*`** are available. Embedded consumers can reuse the same behavior via **`createPinningHttpRequestHandler()`** or **`PinningHttpServer`**.
 
 ## CORS
 
@@ -76,7 +76,7 @@ curl -sS "$BASE/health"
 }
 ```
 
-`multiaddrs` is the **count** of advertised multiaddrs, not the list (use **`GET /multiaddrs`**). When **`METRICS_HTTPS_ENABLED`** is true and a certificate is active, **`metricsHttps.listening`** is true, **`port`** is the bound port, and **`exampleUrl`** is a sample **`https://metrics.<zone>:<port>/health`** URL (use any single-label prefix instead of `metrics` if you prefer).
+`multiaddrs` is the **count** of advertised multiaddrs, not the list (use **`GET /multiaddrs`**). When **`METRICS_HTTPS_ENABLED`** is true and a certificate is active, **`metricsHttps.listening`** is true, **`internalPort`** is the bound port, **`externalPort`** uses `EXTERNAL_METRICS_HTTPS_PORT` when available, and **`exampleUrl`** uses the resolved AutoTLS hostname.
 
 ---
 
@@ -260,7 +260,13 @@ curl -sS -X POST "$BASE/pinning/sync?dbAddress=/orbitdb/zdpuBExampleAddressRepla
 
 ### `GET /ipfs/<cid>` and `GET /ipfs/<cid>/<path…>`
 
-Stream **raw bytes** for content that is **already pinned locally** in Helia. **No network fetch:** uses **`offline: true`** / local blockstore only.
+Stream **raw bytes** for content using the configured gateway mode. The default relay uses **pinned-first with Helia network fallback**:
+
+1. try locally pinned content first
+2. if not pinned locally, fall back to Helia `unixfs.cat`
+3. network fetch is therefore allowed in the default mode
+
+Embedded consumers can switch the handler to **`pinned-only`** mode when they want strict local-only behavior.
 
 **Path:**
 

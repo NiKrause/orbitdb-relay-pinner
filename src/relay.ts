@@ -7,6 +7,7 @@ import { createLibp2pConfig } from './config/libp2p.js'
 import { initializeStorage } from './services/storage.js'
 import { MetricsServer } from './services/metrics.js'
 import { orbitdbReplicationService, type OrbitdbReplicationServiceApi } from './services/orbitdb-replication-service.js'
+import { connectivityDebugProtocolsService, type ConnectivityDebugProtocolsServiceInit } from './services/connectivity-debug-protocols-service.js'
 import { setupEventHandlers } from './events/handlers.js'
 import { loggingConfig } from './config/logging.js'
 import { headsStreamLog, log } from './utils/logger.js'
@@ -14,6 +15,12 @@ import { headsStreamLog, log } from './utils/logger.js'
 export type RelayOptions = {
   testMode?: boolean
   storageDir?: string
+  debugProtocols?: ConnectivityDebugProtocolsServiceInit
+  pinningHttp?: {
+    enabled?: boolean
+    fallbackMode?: 'pinned-only' | 'pinned-first-network-fallback'
+    catTimeoutMs?: number
+  }
 }
 
 export type RelayRuntime = {
@@ -97,6 +104,11 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
         blockstore,
         orbitdbDirectory: join(storageDir, 'orbitdb'),
       }),
+      ...(opts.debugProtocols != null
+        ? {
+            connectivityDebugProtocols: connectivityDebugProtocolsService(opts.debugProtocols),
+          }
+        : {}),
     }),
   )
   attachOrbitdbHeadsStreamLogging(libp2p as any)
@@ -106,6 +118,12 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
   const metricsServer = new MetricsServer({
     getLibp2p: () => libp2p as any,
     pinning: orbitdbReplication.createPinningHttpHandlers(),
+    getHelia: () => orbitdbReplication.ipfs ?? null,
+    pinningHttp: {
+      enabled: opts.pinningHttp?.enabled ?? true,
+      fallbackMode: opts.pinningHttp?.fallbackMode ?? 'pinned-first-network-fallback',
+      catTimeoutMs: opts.pinningHttp?.catTimeoutMs,
+    },
   })
   await metricsServer.start()
   metricsServer.attachAutoTlsFromLibp2p(libp2p as any)

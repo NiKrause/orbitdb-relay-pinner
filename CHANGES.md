@@ -1,5 +1,18 @@
 # Changes
 
+## v0.9.0
+
+- Added `connectivityDebugProtocolsService()` as an opt-in embeddable libp2p service for the versioned `/connectivity-echo/1.0.0` and `/connectivity-bulk/1.0.0` debug protocols.
+- Added reusable PinningHttp exports so embedded consumers can reuse `/health`, `/multiaddrs`, `/pinning/*`, and `/ipfs/*` without copying relay-local HTTP code.
+- Moved shared route behavior into `createPinningHttpRequestHandler()` and `PinningHttpServer`, and updated the relay runtime to use that shared implementation.
+- Added configurable `/ipfs/*` gateway fallback so the default runtime serves pinned content first and then falls back to Helia network retrieval when content is not pinned locally.
+- Added upstream test coverage for the new debug-protocol service export and the shared PinningHttp handler error/fallback behavior.
+- Verified with `pnpm test`, plus downstream `helia-connectivity-lab` build, PWA check, and the key Playwright relay replication scenario.
+
+### Release note
+
+This is a minor release that expands `orbitdb-relay-pinner` from a reusable OrbitDB replication service into a more complete embeddable relay toolkit. Consumers can now opt into shared debug protocols, reuse the standard pinning and IPFS HTTP surface directly, and rely on the same pinned-first gateway semantics used by the full relay runtime.
+
 ## v0.8.0
 
 - Switched repository and GitHub Actions installs from `npm` to `pnpm`, including lockfile-based CI setup and pinned package-manager metadata.

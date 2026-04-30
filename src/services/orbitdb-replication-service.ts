@@ -18,6 +18,7 @@ export type OrbitdbReplicationServiceInit = {
 export interface OrbitdbReplicationServiceApi {
   createPinningHttpHandlers(): PinningHttpHandlers
   syncAllOrbitDBRecords(dbAddress: string): Promise<void>
+  readonly ipfs?: any | null
   start(): Promise<void>
   stop(): Promise<void>
   afterStart?(): Promise<void>
@@ -243,7 +244,7 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
   private readonly components: any
   private readonly init: OrbitdbReplicationServiceInit
   private libp2p: Libp2pFacade | null
-  private ipfs: any | null
+  private ipfsInstance: any | null
   private databaseService: DatabaseService | null
   private cleanupSyncHandlers: (() => Promise<void>) | null
   private cleanupRegistrarHooks: (() => void) | null
@@ -253,7 +254,7 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
     this.components = components
     this.init = init
     this.libp2p = null
-    this.ipfs = null
+    this.ipfsInstance = null
     this.databaseService = null
     this.cleanupSyncHandlers = null
     this.cleanupRegistrarHooks = null
@@ -279,7 +280,7 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
       const cleanupSyncHandlers = setupOrbitdbReplicationHandlers(libp2p, databaseService)
 
       this.libp2p = libp2p
-      this.ipfs = ipfs
+      this.ipfsInstance = ipfs
       this.databaseService = databaseService
       this.cleanupSyncHandlers = cleanupSyncHandlers
       this.cleanupRegistrarHooks = cleanupRegistrarHooks
@@ -312,13 +313,13 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
     const cleanupSyncHandlers = this.cleanupSyncHandlers
     const cleanupRegistrarHooks = this.cleanupRegistrarHooks
     const databaseService = this.databaseService
-    const ipfs = this.ipfs
+    const ipfs = this.ipfsInstance
 
     this.started = false
     this.cleanupSyncHandlers = null
     this.cleanupRegistrarHooks = null
     this.databaseService = null
-    this.ipfs = null
+    this.ipfsInstance = null
     this.libp2p = null
 
     databaseService?.beginShutdown()
@@ -349,6 +350,10 @@ class OrbitdbReplicationService implements OrbitdbReplicationServiceApi {
   }
 
   async stop(): Promise<void> {}
+
+  get ipfs(): any | null {
+    return this.ipfsInstance
+  }
 
   createPinningHttpHandlers(): PinningHttpHandlers {
     return this.requireDatabaseService().createPinningHttpHandlers()

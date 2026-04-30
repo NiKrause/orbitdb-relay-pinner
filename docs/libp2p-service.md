@@ -5,6 +5,12 @@ This package can be used in two ways:
 - `startRelay()` for the full relay-pinner runtime
 - `orbitdbReplicationService()` for mounting the OrbitDB replication + Helia pinning logic inside an existing libp2p node
 
+It also exports:
+
+- `connectivityDebugProtocolsService()` for opt-in `/connectivity-echo/1.0.0` and `/connectivity-bulk/1.0.0`
+- `createPinningHttpRequestHandler()` for embedding `/health`, `/multiaddrs`, `/pinning/*`, and `/ipfs/*`
+- `PinningHttpServer` as a small HTTP(S) wrapper around that request handler
+
 ## Install
 
 Published package:
@@ -125,6 +131,12 @@ Methods:
 
 - `syncAllOrbitDBRecords(dbAddress: string)`
 - `createPinningHttpHandlers()`
+
+Additional reusable exports:
+
+- `connectivityDebugProtocolsService(init)`
+- `createPinningHttpRequestHandler(options)`
+- `PinningHttpServer`
 
 Init options:
 
