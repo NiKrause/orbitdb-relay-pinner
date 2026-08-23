@@ -11,8 +11,21 @@ export const DEFAULT_RELAY_CIRCUIT_HOP_TIMEOUT_MS = 30000 * TEN
 /** Previously 1000 */
 export const DEFAULT_RELAY_CIRCUIT_MAX_RESERVATIONS = 1000 * TEN
 
-/** Previously 2 hours */
-export const DEFAULT_RELAY_CIRCUIT_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000 * TEN
+/**
+ * Deliberately *not* 10× here, and shorter than js-libp2p's own two hours.
+ *
+ * `@libp2p/circuit-relay-v2` does not remove a reservation when its peer
+ * disconnects — the only `removeReservation` in the server sits in a `catch`
+ * for a failed confirmation, and nothing listens for `connection:close`. TTL
+ * expiry is the sole cleanup. Every browser reload is a fresh peer id, so each
+ * session leaves an entry behind for the whole of it: measured at five
+ * reservations against one live connection after two browsers were closed (#47).
+ *
+ * Twenty minutes matches `DEFAULT_RELAY_CIRCUIT_DEFAULT_DURATION_LIMIT_MS`, so
+ * a client that has to renew its circuit before that limit renews the
+ * reservation in the same breath rather than tracking two clocks.
+ */
+export const DEFAULT_RELAY_CIRCUIT_RESERVATION_TTL_MS = 20 * 60 * 1000
 
 /** Previously 1 GiB */
 export const DEFAULT_RELAY_CIRCUIT_DEFAULT_DATA_LIMIT_BYTES = BigInt(1024 * 1024 * 1024) * BigInt(TEN)

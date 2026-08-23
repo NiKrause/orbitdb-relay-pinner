@@ -187,7 +187,7 @@ See **`.env.example`** for a full list including **circuit relay v2** tuning (`R
 - `PUBSUB_TOPICS` to override pubsub peer discovery topics (default: `todo._peer-discovery._p2p._pubsub`)
 - `TEST_PRIVATE_KEY` / `RELAY_PRIV_KEY` for `--test` runs (optional)
 - **Sync bounds:** `RELAY_ORBITDB_SUBSCRIBE_TIMEOUT_MS`, `RELAY_ORBITDB_SYNC_TIMEOUT_MS`, `RELAY_ORBITDB_SYNC_COOLDOWN_MS`, `RELAY_ORBITDB_SYNC_MAX_COOLDOWN_MS`, `RELAY_PINNING_SYNC_TIMEOUT_MS` — keep one unsyncable database from stalling pubsub-driven discovery for the whole node (see `src/config/orbitdb-sync-env.ts`).
-- **Circuit relay (v0.4+):** `RELAY_CIRCUIT_HOP_TIMEOUT_MS`, `RELAY_CIRCUIT_MAX_RESERVATIONS`, `RELAY_CIRCUIT_RESERVATION_TTL_MS`, `RELAY_CIRCUIT_DEFAULT_DATA_LIMIT_BYTES`, `RELAY_CIRCUIT_DEFAULT_DURATION_LIMIT_MS` — defaults are set to **10×** the pre-0.4 hardcoded limits (see `src/config/circuit-relay-env.ts`).
+- **Circuit relay (v0.4+):** `RELAY_CIRCUIT_HOP_TIMEOUT_MS`, `RELAY_CIRCUIT_MAX_RESERVATIONS`, `RELAY_CIRCUIT_RESERVATION_TTL_MS`, `RELAY_CIRCUIT_DEFAULT_DATA_LIMIT_BYTES`, `RELAY_CIRCUIT_DEFAULT_DURATION_LIMIT_MS` — defaults are **10×** the pre-0.4 hardcoded limits, with one exception: `RELAY_CIRCUIT_RESERVATION_TTL_MS` is **20 minutes**, shorter even than js-libp2p's own two hours, because the library never removes a reservation when its peer disconnects and expiry is the only cleanup there is (#47). See `src/config/circuit-relay-env.ts`.
 
 ## Development
 

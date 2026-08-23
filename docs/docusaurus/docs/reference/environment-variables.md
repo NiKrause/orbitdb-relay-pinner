@@ -76,7 +76,7 @@ support heavier multi-peer / test workloads.
 | --- | --- | --- |
 | `RELAY_CIRCUIT_HOP_TIMEOUT_MS` | `300000` (5 min) | Max time an incoming relay hop may take. |
 | `RELAY_CIRCUIT_MAX_RESERVATIONS` | `10000` | Max simultaneous relay reservations. |
-| `RELAY_CIRCUIT_RESERVATION_TTL_MS` | `72000000` (20 h) | How long a reservation stays valid. |
+| `RELAY_CIRCUIT_RESERVATION_TTL_MS` | `1200000` (20 min) | How long a reservation stays valid. Short on purpose: the library never removes a reservation when its peer disconnects, so expiry is the only cleanup there is (NiKrause/orbitdb-relay#47). |
 | `RELAY_CIRCUIT_DEFAULT_DATA_LIMIT_BYTES` | `10737418240` (10 GiB) | Max bytes per relayed connection (bigint string). |
 | `RELAY_CIRCUIT_DEFAULT_DURATION_LIMIT_MS` | `1200000` (20 min) | Max duration a single relayed circuit may stay open. |
 
