@@ -11,6 +11,11 @@ import { connectivityDebugProtocolsService, type ConnectivityDebugProtocolsServi
 import { setupEventHandlers } from './events/handlers.js'
 import { loggingConfig } from './config/logging.js'
 import { headsStreamLog, log } from './utils/logger.js'
+import {
+  createIdentifyPayloadWarner,
+  summariseIdentifyPayload,
+} from './services/identify-payload.js'
+import { setIdentifyPayloadProvider } from './services/metrics.js'
 
 export type RelayOptions = {
   testMode?: boolean
@@ -199,6 +204,24 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
   await metricsServer.start()
   metricsServer.attachAutoTlsFromLibp2p(libp2p as any)
 
+  // Identify is dropped whole once it passes the client's maxMessageSize, so a
+  // relay can lose `hop` from every peer's view without anything failing
+  // locally (#50). Report the number rather than wait for the symptom.
+  const identifySummary = () => summariseIdentifyPayload(libp2p as any)
+  setIdentifyPayloadProvider(identifySummary)
+  const warnIdentifyPayload = createIdentifyPayloadWarner((message, detail) => {
+    console.warn(`⚠️  ${message}`, detail)
+  })
+  warnIdentifyPayload(identifySummary())
+  const identifyPayloadTimer = setInterval(() => {
+    try {
+      warnIdentifyPayload(identifySummary())
+    } catch {
+      // observability must never take the relay down
+    }
+  }, 60_000)
+  identifyPayloadTimer.unref?.()
+
   if (loggingConfig.enableGeneralLogs) {
     log('Relay PeerId: %s', libp2p.peerId.toString())
     log('p2p addr: %o', libp2p.getMultiaddrs().map((ma) => ma.toString()))
@@ -206,6 +229,8 @@ export async function startRelay(opts: RelayOptions = {}): Promise<RelayRuntime>
 
   return {
     stop: async () => {
+      clearInterval(identifyPayloadTimer)
+      setIdentifyPayloadProvider(null)
       try {
         await cleanupEventHandlers?.()
       } catch {

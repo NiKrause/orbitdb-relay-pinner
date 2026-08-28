@@ -17,6 +17,8 @@ type Libp2pLike = {
 }
 
 /** Result of POST `/pinning/sync` (also embedded in JSON response with `dbAddress`). */
+import type { IdentifyPayloadSummary } from './identify-payload.js'
+
 export type PinningSyncResult = {
   ok: boolean
   error?: string
@@ -116,6 +118,59 @@ const relayInboundOrbitdbHeadsRejectCounter = new client.Counter({
 export function incRelayInboundOrbitdbHeadsReject(): void {
   relayInboundOrbitdbHeadsRejectCounter.inc()
 }
+
+/**
+ * Identify payload size, exported so the 8 KiB cliff in #50 is visible before
+ * it is reached. The provider is set by the relay once libp2p exists; until
+ * then the gauges report zero rather than guessing.
+ */
+let identifyPayloadProvider: (() => IdentifyPayloadSummary) | null = null
+
+/** Point the identify gauges at a live libp2p node. */
+export function setIdentifyPayloadProvider(provider: (() => IdentifyPayloadSummary) | null): void {
+  identifyPayloadProvider = provider
+}
+
+const identifyGaugeValue = (pick: (summary: IdentifyPayloadSummary) => number): number => {
+  try {
+    const summary = identifyPayloadProvider?.()
+    return summary ? pick(summary) : 0
+  } catch {
+    return 0
+  }
+}
+
+new client.Gauge({
+  name: 'relay_identify_payload_bytes',
+  help: 'Estimated size of this relay\'s identify response. Clients drop the whole message above their maxMessageSize (8192 by default)',
+  collect() {
+    this.set(identifyGaugeValue((s) => s.estimatedBytes))
+  },
+})
+
+new client.Gauge({
+  name: 'relay_identify_payload_limit_bytes',
+  help: 'The client-side identify limit this relay is measured against',
+  collect() {
+    this.set(identifyGaugeValue((s) => s.limitBytes))
+  },
+})
+
+new client.Gauge({
+  name: 'relay_identify_protocols_total',
+  help: 'Protocols the registrar announces through identify',
+  collect() {
+    this.set(identifyGaugeValue((s) => s.protocolCount))
+  },
+})
+
+new client.Gauge({
+  name: 'relay_identify_orbitdb_heads_protocols_total',
+  help: 'The /orbitdb/heads/* subset of announced protocols — one per open database (#51)',
+  collect() {
+    this.set(identifyGaugeValue((s) => s.orbitdbHeadsProtocolCount))
+  },
+})
 
 function isPublicAddress(addr: string): boolean {
   if (!addr) return false
