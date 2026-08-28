@@ -5,6 +5,15 @@ import { CID } from 'multiformats/cid'
 
 import { RELAY_VERSION } from '../version.js'
 import type { PinningHttpHandlers } from '../services/metrics.js'
+import {
+  enrichBrowserTransportCerthash,
+  filterAnnounceAddresses,
+  isDeployedMode,
+  isPublicAddress,
+} from '../config/announce-addresses.js'
+
+// Re-exported: the certhash behaviour has a test that imports it from here.
+export { enrichBrowserTransportCerthash }
 
 export type Libp2pLike = {
   peerId?: { toString: () => string; toCID?: () => { bytes: Uint8Array } }
@@ -79,21 +88,6 @@ function firstSearchParam(reqUrl: string | undefined, names: string[]): string {
   return ''
 }
 
-function isPublicAddress(addr: string): boolean {
-  if (!addr) return false
-  if (addr.includes('/ip4/127.')) return false
-  if (addr.includes('/ip4/10.')) return false
-  if (addr.includes('/ip4/192.168.')) return false
-  const m = addr.match(/\/ip4\/172\.(\d+)\./)
-  if (m) {
-    const octet = Number(m[1])
-    if (octet >= 16 && octet <= 31) return false
-  }
-  if (addr.includes('/ip6/::1')) return false
-  if (addr.includes('/ip6/fc') || addr.includes('/ip6/fd')) return false
-  return true
-}
-
 function prioritizeAddresses(addrs: string[]): string[] {
   return [...addrs].sort((a, b) => {
     const aPublic = isPublicAddress(a)
@@ -117,38 +111,6 @@ function prioritizeAddresses(addrs: string[]): string[] {
  * the same transport onto bare entries; when no certhash exists anywhere,
  * drop the bare entries instead of advertising them.
  */
-export function enrichBrowserTransportCerthash(addrs: string[]): string[] {
-  const suffixFor = (transport: string): string | null => {
-    for (const addr of addrs) {
-      const index = addr.indexOf(`/${transport}/certhash/`)
-      if (index === -1) continue
-      const tail = addr.slice(index + transport.length + 2)
-      const p2pIndex = tail.indexOf('/p2p/')
-      return p2pIndex === -1 ? tail : tail.slice(0, p2pIndex)
-    }
-    return null
-  }
-
-  const result: string[] = []
-  for (const addr of addrs) {
-    const transport = addr.includes('/webrtc-direct')
-      ? 'webrtc-direct'
-      : addr.includes('/webtransport')
-        ? 'webtransport'
-        : null
-    if (!transport || addr.includes('/certhash/')) {
-      result.push(addr)
-      continue
-    }
-    const suffix = suffixFor(transport)
-    if (!suffix) continue
-    const marker = `/${transport}`
-    const markerEnd = addr.indexOf(marker) + marker.length
-    result.push(`${addr.slice(0, markerEnd)}/${suffix}${addr.slice(markerEnd)}`)
-  }
-  return result
-}
-
 function applyCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse, config: PinningHttpRequestHandlerOptions['cors']) {
   const originConfig = config?.origin ?? '*'
   const requestOrigin = req.headers.origin
@@ -372,29 +334,10 @@ export function createPinningHttpRequestHandler(options: PinningHttpRequestHandl
      if (pathname === '/multiaddrs' && req.method === 'GET') {
        const libp2p = options.getLibp2p?.() ?? null
        
-       // Check for deployment indicators to determine if we should filter internal addresses
-       const isDeployedMode = Boolean(
-         process.env.PROXY_HOSTNAME?.trim() ||
-         process.env.PUBLIC_IPV4?.trim() ||
-         process.env.EXTERNAL_TCP_PORT?.trim() ||
-         process.env.EXTERNAL_WS_PORT?.trim() ||
-         process.env.EXTERNAL_WEBRTC_PORT?.trim() ||
-         process.env.EXTERNAL_QUIC_PORT?.trim()
-       )
-       
        const allRaw = (libp2p?.getMultiaddrs?.() || []).map((ma) => ma.toString())
-       // Enrich BEFORE the public filter: private listener addresses carry the
-       // certhash that the synthesized public announce entries need grafted.
-       const enriched = enrichBrowserTransportCerthash(allRaw)
-       let all: string[]
-
-       if (isDeployedMode) {
-         // Filter out internal-only addresses in deployed mode
-         all = prioritizeAddresses(enriched.filter(isPublicAddress))
-       } else {
-         // Keep all addresses in development mode
-         all = prioritizeAddresses(enriched)
-       }
+       // Exactly what the address manager announces, so this endpoint and the
+       // peer-facing list cannot drift apart again (#48).
+       const all = prioritizeAddresses(filterAnnounceAddresses(allRaw))
        
        const byTransport = {
          webrtc: all.filter((ma) => ma.includes('/webrtc')),
