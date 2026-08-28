@@ -10,6 +10,7 @@ import { pubsubPeerDiscovery } from '@libp2p/pubsub-peer-discovery'
 import { kadDHT, removePrivateAddressesMapper } from '@libp2p/kad-dht'
 import { bootstrap } from '@libp2p/bootstrap'
 import { tcp } from '@libp2p/tcp'
+import { announceFilter } from './announce-addresses.js'
 import { ping } from '@libp2p/ping'
 import { autoNAT } from '@libp2p/autonat'
 import { dcutr } from '@libp2p/dcutr'
@@ -113,6 +114,10 @@ export const createLibp2pConfig = (
           : []),
       ],
       ...(e.appendAnnounceArray.length > 0 && { appendAnnounce: e.appendAnnounceArray }),
+      // Same hygiene the HTTP surface has always applied, now where the
+      // addresses actually leave the node: identify and circuit-relay
+      // reservations used to hand out the raw list (#48).
+      announceFilter,
     },
     transports: [
       circuitRelayTransport(),
