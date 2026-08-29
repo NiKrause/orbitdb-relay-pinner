@@ -4,6 +4,7 @@ import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 
 import { RELAY_VERSION } from '../version.js'
+import { summariseIdentifyPayload } from '../services/identify-payload.js'
 import type { PinningHttpHandlers } from '../services/metrics.js'
 import {
   enrichBrowserTransportCerthash,
@@ -17,8 +18,9 @@ export { enrichBrowserTransportCerthash }
 
 export type Libp2pLike = {
   peerId?: { toString: () => string; toCID?: () => { bytes: Uint8Array } }
-  getMultiaddrs?: () => Array<{ toString: () => string }>
+  getMultiaddrs?: () => Array<{ bytes?: Uint8Array; toString: () => string }>
   getConnections?: () => unknown[]
+  getProtocols?: () => string[]
 }
 
 type HeliaLike = any
@@ -321,6 +323,8 @@ export function createPinningHttpRequestHandler(options: PinningHttpRequestHandl
         peerId: libp2p?.peerId?.toString?.() || null,
         connections: { active: connections.length },
         multiaddrs: multiaddrs.length,
+        // How close identify is to the size at which clients drop it whole (#50).
+        identify: summariseIdentifyPayload(libp2p),
         autoTlsServingZone:
           metricsHttpsInfo != null && 'autoTlsServingZone' in metricsHttpsInfo
             ? (metricsHttpsInfo.autoTlsServingZone as string | null)
