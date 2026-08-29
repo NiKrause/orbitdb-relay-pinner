@@ -5,6 +5,7 @@ import { CID } from 'multiformats/cid'
 
 import { RELAY_VERSION } from '../version.js'
 import { summariseIdentifyPayload } from '../services/identify-payload.js'
+import { redactLastRecord } from '../config/pinning-exposure-env.js'
 import type { PinningHttpHandlers } from '../services/metrics.js'
 import {
   enrichBrowserTransportCerthash,
@@ -378,7 +379,15 @@ export function createPinningHttpRequestHandler(options: PinningHttpRequestHandl
 
     if (pinning && pathname === '/pinning/databases' && req.method === 'GET') {
       const filterRaw = firstSearchParam(req.url, ['address', 'dbAddress'])
-      const payload = pinning.getDatabases(filterRaw ? { address: filterRaw } : undefined)
+      const raw = pinning.getDatabases(filterRaw ? { address: filterRaw } : undefined)
+      // The listing is unauthenticated; record contents are not ours to publish (#54).
+      const payload = {
+        ...raw,
+        databases: raw.databases.map((entry: any) => ({
+          ...entry,
+          lastRecord: redactLastRecord(entry?.lastRecord),
+        })),
+      }
       if (filterRaw && payload.total === 0) {
         sendError(res, 404, 'database_not_found', 'Database address not found in relay sync history')
         return
@@ -420,7 +429,7 @@ export function createPinningHttpRequestHandler(options: PinningHttpRequestHandl
           fallbackScanUsed: result.fallbackScanUsed ?? false,
           extractedMediaCids: result.extractedMediaCids ?? [],
           entryCount: result.entryCount ?? null,
-          lastRecord: result.lastRecord ?? null,
+          lastRecord: redactLastRecord(result.lastRecord),
           snapshotSource: result.snapshotSource ?? null,
           ...(result.coalesced ? { coalesced: true } : {}),
         })
